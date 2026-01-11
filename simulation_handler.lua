@@ -4,54 +4,65 @@ pcall(require, "table.clear")
 --- @class egg.SimulationHandler
 local SimulationHandler = {}
 
--- table of simulation parameters, any setting not specified will default to
--- the corresponding one in this table
-local prefix = "egg_fluid_simulation"
-local default_settings = {
-    particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl",
-    threshold_shader_path = prefix .. "/simulation_handler_threshold.glsl",
-    outline_shader_path = prefix .. "/simulation_handler_outline.glsl",
+--- @brief table of simulation parameters, a default is used for any setting not specified
+local default_settings
 
-    step_delta = 1 / 60, -- seconds
-    max_n_steps = 8, -- cf. update
+do
+    local prefix = "egg_fluid_simulation" -- path prefix
+    default_settings = {
+        -- shader paths
+        particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl",
+        threshold_shader_path = prefix .. "/simulation_handler_threshold.glsl",
+        outline_shader_path = prefix .. "/simulation_handler_outline.glsl",
 
-    egg_white = {
-        particle_density = 1 / 32, -- n particles / px^2
-        min_radius = 4, -- px
-        max_radius = 4, -- px
-        min_mass = 1, -- fraction
-        max_mass = 1, -- fraction
-        damping = 0.7, -- in [0, 1], higher is more dampened
+        -- overall fps, the simulation will be run at this fixed rate, regardless of fps
+        step_delta = 1 / 60, -- seconds
+        max_n_steps = 8, -- cf. update
 
-        color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
-        default_radius = 50, -- total radius of egg white at rest, px
-    },
+        -- particle configs for egg white
+        egg_white = {
+            particle_density = 1 / 32, -- n particles / px^2
+            min_radius = 4, -- px
+            max_radius = 4, -- px
+            min_mass = 1, -- fraction
+            max_mass = 1, -- fraction
+            damping = 0.7, -- in [0, 1], higher is more dampened
 
-    egg_yolk = {
-        particle_density = 1 / 64,
-        min_radius = 4,
-        max_radius = 4,
-        min_mass = 1,
-        max_mass = 1,
-        damping = 0.5,
+            color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
+            default_radius = 50, -- total radius of egg white at rest, px
+        },
 
-        color = { 255 / 255, 129 / 255, 0 / 255, 1 },
-        default_radius = 16, -- total radius of yolk at rest, px
-    },
+        -- particle configs for egg yolk
+        egg_yolk = {
+            particle_density = 1 / 64,
+            min_radius = 4,
+            max_radius = 4,
+            min_mass = 1,
+            max_mass = 1,
+            damping = 0.5,
 
-    n_sub_steps = 1, -- number of solver sub steps
+            color = { 255 / 255, 129 / 255, 0 / 255, 1 },
+            default_radius = 16, -- total radius of yolk at rest, px
+        },
 
-    canvas_msaa = 0, -- msaa for render textures
-    particle_texture_resolution_factor = 8, -- fraction
-    particle_texture_padding = 3, -- px
-    texture_format = "rgba8" -- love.PixelFormat
-}
+        n_sub_steps = 1, -- number of solver sub steps
 
---- @brief
+        -- render texture config
+        canvas_msaa = 0, -- msaa for render textures
+        particle_texture_padding = 3, -- px
+        texture_format = "rgba8", -- love.PixelFormat
+        particle_texture_resolution_factor = 4, -- fraction
+    }
+end
+
+--- @brief add a new batch to the simulation
+--- @overload fun(self: egg.SimulationHandler, x: number, y: number)
+--- @param x number x position, px
+--- @param y number y position, px
+--- @param white_radius number? radius of the egg white, px
+--- @param yolk_radius number? radius of egg yolk, px
+--- @return number id of the new batch
 function SimulationHandler:add(x, y, white_radius, yolk_radius)
-    if x == nil then x = 0 end
-    if y == nil then y = 0 end
-
     local white_settings = self._settings.egg_white
     local yolk_settings = self._settings.egg_yolk
 
@@ -82,9 +93,13 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius)
 
     assert(self._batch_id_to_batch[batch_id] == nil) -- should never trigger
     self._batch_id_to_batch[batch_id] = batch
+
+    return batch_id
 end
 
---- @brief
+--- @brief removes a batch from the simulation
+--- @param batch_id number id of the batch to remove, acquired from SimulationHandler.add
+--- @return nil
 function SimulationHandler:remove(batch_id)
     self:_assert(batch_id, "number")
 
@@ -92,7 +107,8 @@ function SimulationHandler:remove(batch_id)
     -- env updated next step
 end
 
---- @brief
+--- @brief list the ids of all batches
+--- @return number[] array of batch ids
 function SimulationHandler:list_ids()
     local ids = {}
     for id, _ in pairs(self._batch_id_to_batch) do
@@ -101,7 +117,10 @@ function SimulationHandler:list_ids()
     return ids
 end
 
---- @brief
+--- @brief draw all supplied batches, or all if none supplied
+--- @overload fun(self: egg.SimulationHandler)
+--- @param batches number[]? array of batch ids
+--- @return nil
 function SimulationHandler:draw(batches)
     if batches ~= nil then
         self:_assert(batches, "table")
@@ -110,7 +129,11 @@ function SimulationHandler:draw(batches)
     self:_draw(self:_collect_batches(batches))
 end
 
---- @brief
+--- @brief draw all particles below the z render priority
+--- @overload fun(self: egg.SimulationHandler, z_cutoff: number)
+--- @param z_cutoff number z cutoff value, usually < 0
+--- @param batches number[]? array of batch ids to draw
+--- @return nil
 function SimulationHandler:draw_below(z_cutoff, batches)
     if batches ~= nil then
         self:_assert(
@@ -122,11 +145,28 @@ function SimulationHandler:draw_below(z_cutoff, batches)
             z_cutoff, "number"
         )
     end
+
+    -- TODO
 end
 
---- @brief
+--- @brief draw all particles above the z render priority
+--- @overload fun(self: egg.SimulationHandler, z_cutoff: number)
+--- @param z_cutoff number z cutoff value, usually > 0
+--- @param batches number[]? array of batch ids to draw (default: all batches)
+--- @return nil
 function SimulationHandler:draw_above(z_cutoff, batches)
+    if batches ~= nil then
+        self:_assert(
+            z_cutoff, "number",
+            batches, "table"
+        )
+    else
+        self:_assert(
+            z_cutoff, "number"
+        )
+    end
 
+    -- TODO
 end
 
 --- @brief
@@ -160,9 +200,10 @@ function SimulationHandler:update(delta, batches)
     end
 end
 
--- ### internals, never call any of the functions below ## ---
+-- ### internals, never call any of the functions below ## --
 
---- @brief [internal]
+--- @brief [internal] allocate a new instance
+--- @param settings table? override settings
 function SimulationHandler._new(settings) -- sic, no :, self is returned instance, not type
     if settings == nil then settings = default_settings end
 
@@ -199,7 +240,7 @@ function SimulationHandler._new(settings) -- sic, no :, self is returned instanc
     return self
 end
 
---- @brief [internal]
+--- @brief [internal] clear the simulation, useful for debugging
 function SimulationHandler:_reinitialize()
     self._batch_id_to_batch = {}
     self._current_batch_id = 1
@@ -217,7 +258,7 @@ function SimulationHandler:_reinitialize()
     self._last_egg_yolk_env = nil
 end
 
---- @brief [internal]
+--- @brief [internal] load and compile necessary shaders
 function SimulationHandler:_initialize_shaders()
     local new_shader = function(path, defines)
         if defines == nil then defines = {} end
@@ -236,9 +277,26 @@ function SimulationHandler:_initialize_shaders()
     self._particle_texture_shader = new_shader(self._settings.particle_texture_shader_path)
     self._threshold_shader = new_shader(self._settings.threshold_shader_path)
     self._outline_shader = new_shader(self._settings.outline_shader_path)
+
+    -- on vulkan, first use of a shader would cause stutter, so force use here, equivalent to precompiling the shader
+    if love.getVersion() >= 12 and love.graphics.getRendererInfo() == "Vulkan" then
+        love.graphics.push("all")
+        local texture = love.graphics.newCanvas(1, 1)
+        love.graphics.setCanvas(texture)
+        for _, shader in ipairs({
+            self._particle_texture_shader,
+            self._threshold_shader,
+            self._outline_shader
+        }) do
+            love.graphics.setShader(shader)
+            love.graphics.rectangle("fill", 0, 0, 1, 1)
+            love.graphics.setShader(nil)
+        end
+        love.graphics.pop("all")
+    end
 end
 
---- @brief [internal]
+--- @brief [internal] initialize mass distribution texture used for particle density estimation
 function SimulationHandler:_initialize_particle_texture()
     -- create particle texture, this will hold density information
     -- we use the same texture for all particles regardless of size,
@@ -314,7 +372,7 @@ local _previous_y = 7 -- last steps y position, px
 local _radius = 8 -- radius, px
 local _mass = 9 -- mass, fraction
 
---- @brief [internal]
+--- @brief [internal] create a new particle batch
 function SimulationHandler:_new_batch(
     center_x, center_y,
     white_x_radius, white_y_radius, white_n_particles,
@@ -388,7 +446,7 @@ function SimulationHandler:_new_batch(
     return self._current_batch_id, batch
 end
 
---- @brief [internal]
+--- @brief [internal] perform a full step of the simulation, includes substeps
 function SimulationHandler:_step(delta, batches)
     local settings = self._settings
 
@@ -584,7 +642,7 @@ function SimulationHandler:_step(delta, batches)
     self._canvases_need_update = true
 end
 
---- @brief [internal]
+--- @brief [internal] udpate render textures if necessary, then draw all supplied batches
 function SimulationHandler:_draw(batches)
     if self._egg_white_canvas == nil or self._egg_yolk_canvas == nil then
         -- no batches added yet
@@ -601,7 +659,6 @@ function SimulationHandler:_draw(batches)
 
         local texture_w, texture_h = self._particle_texture:getDimensions()
         local padding = self._settings.particle_texture_padding
-        local texture_scale = self._settings.particle_texture_resolution_factor
 
         local draw_particle = function(particle)
             local radius = particle[_radius]
@@ -774,7 +831,7 @@ function SimulationHandler:_assert(...)
     return not should_exit
 end
 
--- return type object, which returns a simulation handler on call
+-- return type, invoking the type returns and instance: `local instance = SimulationHandler()`
 return setmetatable(SimulationHandler, {
     __call = function(...)
         return SimulationHandler._new(...)
