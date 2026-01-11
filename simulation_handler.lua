@@ -1,59 +1,55 @@
-require "egg_fluid_simulation.math"
+local prefix = "egg_fluid_simulation" -- path prefix, change this depending on where the library is located
+require(prefix .. ".math")
 pcall(require, "table.clear")
 
 --- @class egg.SimulationHandler
 local SimulationHandler = {}
 
---- @brief table of simulation parameters, a default is used for any setting not specified
-local default_settings
+--- @brief table of simulation parameters, this default is used for any setting not specified
+local default_settings = {
+    -- shader paths
+    particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl",
+    threshold_shader_path = prefix .. "/simulation_handler_threshold.glsl",
+    outline_shader_path = prefix .. "/simulation_handler_outline.glsl",
 
-do
-    local prefix = "egg_fluid_simulation" -- path prefix
-    default_settings = {
-        -- shader paths
-        particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl",
-        threshold_shader_path = prefix .. "/simulation_handler_threshold.glsl",
-        outline_shader_path = prefix .. "/simulation_handler_outline.glsl",
+    -- overall fps, the simulation will be run at this fixed rate, regardless of fps
+    step_delta = 1 / 60, -- seconds
+    max_n_steps = 8, -- cf. update
 
-        -- overall fps, the simulation will be run at this fixed rate, regardless of fps
-        step_delta = 1 / 60, -- seconds
-        max_n_steps = 8, -- cf. update
+    -- particle configs for egg white
+    egg_white = {
+        particle_density = 1 / 32, -- n particles / px^2
+        min_radius = 4, -- px
+        max_radius = 4, -- px
+        min_mass = 1, -- fraction
+        max_mass = 1, -- fraction
+        damping = 0.7, -- in [0, 1], higher is more dampened
 
-        -- particle configs for egg white
-        egg_white = {
-            particle_density = 1 / 32, -- n particles / px^2
-            min_radius = 4, -- px
-            max_radius = 4, -- px
-            min_mass = 1, -- fraction
-            max_mass = 1, -- fraction
-            damping = 0.7, -- in [0, 1], higher is more dampened
+        color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
+        default_radius = 50, -- total radius of egg white at rest, px
+    },
 
-            color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
-            default_radius = 50, -- total radius of egg white at rest, px
-        },
+    -- particle configs for egg yolk
+    egg_yolk = {
+        particle_density = 1 / 64,
+        min_radius = 4,
+        max_radius = 4,
+        min_mass = 1,
+        max_mass = 1,
+        damping = 0.5,
 
-        -- particle configs for egg yolk
-        egg_yolk = {
-            particle_density = 1 / 64,
-            min_radius = 4,
-            max_radius = 4,
-            min_mass = 1,
-            max_mass = 1,
-            damping = 0.5,
+        color = { 255 / 255, 129 / 255, 0 / 255, 1 },
+        default_radius = 16, -- total radius of yolk at rest, px
+    },
 
-            color = { 255 / 255, 129 / 255, 0 / 255, 1 },
-            default_radius = 16, -- total radius of yolk at rest, px
-        },
+    n_sub_steps = 2, -- number of solver sub steps
 
-        n_sub_steps = 1, -- number of solver sub steps
-
-        -- render texture config
-        canvas_msaa = 0, -- msaa for render textures
-        particle_texture_padding = 3, -- px
-        texture_format = "rgba8", -- love.PixelFormat
-        particle_texture_resolution_factor = 4, -- fraction
-    }
-end
+    -- render texture config
+    canvas_msaa = 0, -- msaa for render textures
+    particle_texture_padding = 3, -- px
+    texture_format = "rgba8", -- love.PixelFormat
+    particle_texture_resolution_factor = 4, -- fraction
+}
 
 --- @brief add a new batch to the simulation
 --- @overload fun(self: egg.SimulationHandler, x: number, y: number)
