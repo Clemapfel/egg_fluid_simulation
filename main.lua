@@ -1,5 +1,12 @@
-require "include" -- TODO
-require "common.scene_manager" -- TODO
+-- TODO: remove
+require "include"
+require "common.scene_manager"
+require "common.game_state"
+require "common.scene_manager"
+require "common.music_manager"
+require "common.sound_manager"
+require "common.input_manager"
+-- TODO
 
 if egg == nil then egg = {} end
 egg.SimulationHandler = require "egg_fluid_simulation.simulation_handler"
@@ -7,9 +14,24 @@ egg.SimulationHandler = require "egg_fluid_simulation.simulation_handler"
 local simulation_handler = nil -- simulation instance
 local egg_batches = {} -- Table<SimulationHandlerBatchID>
 local debug_example_setting = {
-    n_eggs = 5,
-    egg_area = 50*50 -- px
+    n_eggs = 0
 }
+
+-- TODO: remove
+DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
+    if which == "k" then
+        simulation_handler:_reinitialize()
+    elseif which == "j" then
+        local w, h = love.graphics.getDimensions()
+        local mid_w, mid_h = w / 2, h / 2
+        local range_x, range_y = w * 0.25, h * 0.25
+        simulation_handler:add(
+            rt.random.number(mid_w - range_x, mid_w + range_x),
+            rt.random.number(mid_h - range_y, mid_h + range_y)
+        )
+    end
+end)
+-- TODO
 
 -- ### MAIN ### --
 
@@ -52,7 +74,7 @@ love.draw = function()
     -- draw all egg batches
     simulation_handler:draw()
 
-    -- TODO: z
+    --[[
     local cutoff_z = 0
     simulation_handler:draw_below(0)
     local sprite_w, sprite_h = 80, 50
@@ -61,4 +83,5 @@ love.draw = function()
         sprite_w, sprite_h
     )
     simulation_handler:draw_above(0)
+    ]]--
 end
