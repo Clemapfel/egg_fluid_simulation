@@ -1,4 +1,5 @@
 local prefix = "egg_fluid_simulation" -- path prefix, change this depending on where the library is located
+
 require(prefix .. ".math")
 pcall(require, "table.clear")
 
@@ -196,7 +197,7 @@ function SimulationHandler:update(delta, batches)
     end
 end
 
--- ### internals, never call any of the functions below ## --
+-- ### internals, never call any of the functions below ### --
 
 --- @brief [internal] allocate a new instance
 --- @param settings table? override settings
@@ -210,6 +211,8 @@ function SimulationHandler._new(settings) -- sic, no :, self is returned instanc
     if settings ~= default_settings then
         -- iterate through all keys in default settings, and assign new settings unless it already exists
         -- this way, the argument settings do not need to specify all parameters
+
+        local seen = {}
         local function apply_default_settings(new_settings, defaults)
             for key, default_value in pairs(defaults) do
                 if new_settings[key] == nil then
@@ -336,7 +339,7 @@ function SimulationHandler:_initialize_particle_texture()
         2, 3, 4
     )  -- triangulate
 
-    -- fill particle with density data using a shader
+    -- fill particle with density data using shader
     love.graphics.push("all")
     love.graphics.reset()
     love.graphics.setCanvas(self._particle_texture)
@@ -450,7 +453,7 @@ function SimulationHandler:_step(delta, batches)
     local sub_delta = delta / n_sub_steps
 
     -- setup environments for yolks and white separately
-    local new_environment = function(current_settings, old_env_maybe)
+    local create_environment = function(current_settings, old_env_maybe)
         if old_env_maybe == nil then
             return {
                 particles = {}, -- Table<Particle>
@@ -472,15 +475,13 @@ function SimulationHandler:_step(delta, batches)
                 centroid_y = 0
             }
         else
-            -- if old env present, keep allocated
+            -- if old env present, keep allocated to keep gc pressure low
             local env = old_env_maybe
 
             local clear = table.clear
-            if table.clear == nil then
+            if clear == nil then
                 clear = function(t)
-                    for key, _ in t do
-                        t[key] = nil
-                    end
+                    for key, _ in t do t[key] = nil end
                 end
             end
 
@@ -499,8 +500,8 @@ function SimulationHandler:_step(delta, batches)
         end
     end
 
-    local white_env = new_environment(self._settings.egg_white)
-    local yolk_env = new_environment(self._settings.egg_yolk)
+    local white_env = create_environment(self._settings.egg_white, self._last_egg_white_env)
+    local yolk_env = create_environment(self._settings.egg_yolk, self._last_egg_yolk_env)
 
     -- collect active particles
     for _, batch in ipairs(batches) do
@@ -669,14 +670,12 @@ function SimulationHandler:_draw(batches)
             )
         end
 
-        local clear_color = { 1, 0, 1, 1 }
-
         do -- egg whites
             local env = self._last_egg_white_env
             local canvas_width, canvas_height = self._egg_white_canvas:getDimensions()
 
             love.graphics.setCanvas(self._egg_white_canvas)
-            love.graphics.clear(clear_color)
+            love.graphics.clear(0, 0, 0, 0)
 
             -- translate to canvas local space
             love.graphics.push()
@@ -700,7 +699,7 @@ function SimulationHandler:_draw(batches)
             local canvas_width, canvas_height = self._egg_yolk_canvas:getDimensions()
 
             love.graphics.setCanvas(self._egg_yolk_canvas)
-            love.graphics.clear(clear_color)
+            love.graphics.clear(0, 0, 0, 0)
 
             love.graphics.push()
             love.graphics.translate(
