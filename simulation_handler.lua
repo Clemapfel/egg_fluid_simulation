@@ -1,7 +1,6 @@
 local prefix = "egg_fluid_simulation" -- path prefix, change this depending on where the library is located
 
 require(prefix .. ".math")
-pcall(require, "table.clear")
 
 --- @class egg.SimulationHandler
 local SimulationHandler = {}
@@ -77,10 +76,10 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius)
     )
 
     local white_area = math.pi * white_radius^2 -- area of a circle = pi * r^2
-    local white_n_particles = white_settings.particle_density * white_area
+    local white_n_particles = math.ceil(white_settings.particle_density * white_area)
 
     local yolk_area = math.pi * yolk_radius^2
-    local yolk_n_particles = yolk_settings.particle_density * yolk_area
+    local yolk_n_particles = math.ceil(yolk_settings.particle_density * yolk_area)
 
     local batch_id, batch = self:_new_batch(
         x, y,
@@ -90,6 +89,10 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius)
 
     assert(self._batch_id_to_batch[batch_id] == nil) -- should never trigger
     self._batch_id_to_batch[batch_id] = batch
+    self._n_batches = self._n_batches + 1
+
+    self._total_n_white_particles = self._total_n_white_particles + batch.n_white_particles
+    self._total_n_yolk_particles = self._total_n_yolk_particles + batch.n_yolk_particles
 
     return batch_id
 end
@@ -100,7 +103,17 @@ end
 function SimulationHandler:remove(batch_id)
     self:_assert(batch_id, "number")
 
+    local batch = self._batch_id_to_batch[batch_id]
+    if batch == nil then
+        self:_error(false, "In SimulationHandler.remove: no batch with id `", batch_id, "`")
+        return
+    end
+
     self._batch_id_to_batch[batch_id] = nil
+    self._n_batches = self._n_batches - 1
+    self._total_n_white_particles = self._total_n_white_particles - batch.n_white_particles
+    self._total_n_yolk_particles = self._total_n_yolk_particles - batch.n_yolk_particles
+
     -- env updated next step
 end
 
@@ -243,6 +256,9 @@ end
 function SimulationHandler:_reinitialize()
     self._batch_id_to_batch = {}
     self._current_batch_id = 1
+    self._n_batches = 0
+    self._total_n_white_particles = 0
+    self._total_n_yolk_particles = 0
 
     self._canvases_need_update = false
     self._elapsed = 0
@@ -358,18 +374,55 @@ function SimulationHandler:_initialize_particle_texture()
     love.graphics.pop()
 end
 
--- particle property indices
--- the compiler will inline these so that we get the performance
--- of an array table, while still keeping it somewhat legible
-local _x = 1 -- x position, px
-local _y = 2 -- y position, px
-local _z = 3 -- render priority
-local _velocity_x = 4 -- x velocity, px / s
-local _velocity_y = 5 -- y velocity, px / s
-local _previous_x = 6 -- last steps x position, px
-local _previous_y = 7 -- last steps y position, px
-local _radius = 8 -- radius, px
-local _mass = 9 -- mass, fraction
+local _x_offset = 0  -- x position, px
+local _y_offset = 1  -- y position, px
+local _z_offset = 2  -- render priority
+local _velocity_x_offset = 3 -- x velocity, px / s
+local _velocity_y_offset = 4 -- y velocity, px / s
+local _previous_x_offset = 5 -- last steps x position, px
+local _previous_y_offset = 6 -- last steps y position, px
+local _radius_offset = 7 -- radius, px
+local _mass_offset = 8 -- mass, fraction
+
+local _stride = _mass_offset + 1
+
+-- compute property indices for environment particle array
+local _get_property_indices = function(particle_i)
+    local base = (particle_i - 1) * _stride + 1 -- 1-based
+
+    local x = base + _x_offset
+    local y = base + _y_offset
+    local z = base + _z_offset
+    local velocity_x = base + _velocity_x_offset
+    local velocity_y = base + _velocity_y_offset
+    local previous_x = base + _previous_x_offset
+    local previous_y = base + _previous_y_offset
+    local radius = base + _radius_offset
+    local mass = base + _mass_offset
+
+    return x, y, z,
+        velocity_x, velocity_y,
+        previous_x, previous_y,
+        radius, mass
+end
+
+-- fallback implementations for luajit
+pcall(require, "table.new")
+if table.new == nil then
+    function table.new(n_array, n_hash)
+        return {} -- lua cannot preallocate
+    end
+end
+
+pcall(require, "table.clear")
+if not table.clear then
+    function table.clear(t)
+        for key in pairs(t) do
+            t[key] = nil
+        end
+        return t
+    end
+end
 
 --- @brief [internal] create a new particle batch
 function SimulationHandler:_new_batch(
@@ -399,7 +452,7 @@ function SimulationHandler:_new_batch(
         return math.normalize(dx, dy)
     end
 
-    local new_particle = function(settings, x_radius, y_radius)
+    local add_particle = function(array, settings, x_radius, y_radius)
         -- generate position on circle, with gaussian distribution, mean at center
         local angle = random_number(0, 2 * math.pi)
 
@@ -414,32 +467,36 @@ function SimulationHandler:_new_batch(
         local mass = math.mix(settings.min_mass, settings.max_mass, t)
         local radius = math.mix(settings.min_radius, settings.max_radius, t)
 
-        return {
-            [_x] = x,
-            [_y] = y,
-            [_z] = 0,
-            [_velocity_x] = 0,
-            [_velocity_y] = 0,
-            [_previous_x] = x,
-            [_previous_y] = y,
-            [_radius] = radius,
-            [_mass] = mass
-        }
+        local n = #array + 1
+        array[n + _x_offset] = x
+        array[n + _y_offset] = y
+        array[n + _z_offset] = 0
+        array[n + _velocity_x_offset] = 0
+        array[n + _velocity_y_offset] = 0
+        array[n + _previous_x_offset] = x
+        array[n + _previous_y_offset] = y
+        array[n + _radius_offset] = radius
+        array[n + _mass_offset] = mass
     end
 
     for _ = 1, white_n_particles do
-        table.insert(batch.white_particles, new_particle(
+        add_particle(
+            batch.white_particles,
             self._settings.egg_white,
             white_x_radius, white_y_radius
-        ))
+        )
     end
 
     for _ = 1, yolk_n_particles do
-        table.insert(batch.yolk_particles, new_particle(
+        add_particle(
+            batch.yolk_particles,
             self._settings.egg_yolk,
             yolk_x_radius, yolk_y_radius
-        ))
+        )
     end
+
+    batch.n_white_particles = white_n_particles
+    batch.n_yolk_particles = yolk_n_particles
 
     self._current_batch_id = self._current_batch_id + 1
     return self._current_batch_id, batch
@@ -456,10 +513,10 @@ function SimulationHandler:_step(delta, batches)
     local create_environment = function(current_settings, old_env_maybe)
         if old_env_maybe == nil then
             return {
-                particles = {}, -- Table<Particle>
-                particle_to_particle_collided = {}, -- HashTable<Particle, Particle>
+                particles = {}, -- Table<Number>, particles inline
+                particle_to_particle_collided = {}, -- HashTable<particle_index, particle_index>
 
-                spatial_hash = {}, -- Table<Table<Particle>>
+                spatial_hash = {}, -- Table<Table<particle_index>>
                 spatial_hash_cell_radius = current_settings.min_radius, -- px
 
                 damping = current_settings.damping,
@@ -469,34 +526,32 @@ function SimulationHandler:_step(delta, batches)
                 max_x = -math.huge,
                 max_y = -math.huge,
 
+                n_particles = 0,
                 center_of_mass_x = 0, -- set in post-solve, px
                 center_of_mass_y = 0,
                 centroid_x = 0,
                 centroid_y = 0
             }
         else
-            -- if old env present, keep allocated to keep gc pressure low
+            -- if old env present, keep allocated to keep gc / allocation pressure low
             local env = old_env_maybe
 
-            local clear = table.clear
-            if clear == nil then
-                clear = function(t)
-                    for key, _ in t do t[key] = nil end
-                end
-            end
-
-            clear(env.particles)
-            clear(env.particle_to_particle_collided)
+            table.clear(env.particles)
+            table.clear(env.particle_to_particle_collided)
             for _, column in pairs(env.spatial_hash) do
                 for _, row in pairs(column) do
-                    clear(row)
+                    table.clear(row)
                 end
+                -- do not clear column
             end
 
+            env.n_particles = 0
             env.min_x = math.huge
             env.min_y = math.huge
             env.max_x = -math.huge
             env.max_y = -math.huge
+
+            return env
         end
     end
 
@@ -505,28 +560,33 @@ function SimulationHandler:_step(delta, batches)
 
     -- collect active particles
     for _, batch in ipairs(batches) do
-        for _, particle in ipairs(batch.white_particles) do
-            table.insert(white_env.particles, particle)
+        for _, x in ipairs(batch.white_particles) do
+            table.insert(white_env.particles, x)
         end
+        white_env.n_particles = white_env.n_particles + batch.n_white_particles
 
-        for _, particle in ipairs(batch.yolk_particles) do
-            table.insert(yolk_env.particles, particle)
+        for _, x in ipairs(batch.yolk_particles) do
+            table.insert(yolk_env.particles, x)
         end
+        yolk_env.n_particles = yolk_env.n_particles + batch.n_yolk_particles
     end
 
     for sub_step_i = 1, n_sub_steps do
         -- pre solve: integrate velocity
         local pre_solve = function(env)
             local damping = 1 - env.damping
-            for _, particle in ipairs(env.particles) do
-                particle[_previous_x] = particle[_x]
-                particle[_previous_y] = particle[_y]
+            local particles = env.particles
+            for particle_i = 1, env.n_particles do
+                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass = _get_property_indices(particle_i)
 
-                particle[_velocity_x] = particle[_velocity_x] * damping * sub_delta
-                particle[_velocity_y] = particle[_velocity_y] * damping * sub_delta
+                particles[previous_x] = particles[x]
+                particles[previous_y] = particles[y]
 
-                particle[_x] = particle[_x] + sub_delta * particle[_velocity_x]
-                particle[_y] = particle[_y] + sub_delta * particle[_velocity_y]
+                particles[velocity_x] = particles[velocity_x] * damping * sub_delta
+                particles[velocity_y] = particles[velocity_y] * damping * sub_delta
+
+                particles[x] = particles[x] + sub_delta * particles[velocity_x]
+                particles[y] = particles[y] + sub_delta * particles[velocity_y]
             end
         end
 
@@ -534,9 +594,11 @@ function SimulationHandler:_step(delta, batches)
         pre_solve(yolk_env)
 
         -- add particle to the spatial hash
-        local add_to_spatial_hash = function(env, particle)
-            local cell_x = math.floor(particle[_x] / env.spatial_hash_cell_radius)
-            local cell_y = math.floor(particle[_y] / env.spatial_hash_cell_radius)
+        local add_to_spatial_hash = function(env, particle_i)
+            local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass = _get_property_indices(particle_i)
+
+            local cell_x = math.floor(env.particles[x] / env.spatial_hash_cell_radius)
+            local cell_y = math.floor(env.particles[y] / env.spatial_hash_cell_radius)
 
             local column = env.spatial_hash[cell_x]
             if column == nil then
@@ -550,23 +612,21 @@ function SimulationHandler:_step(delta, batches)
                 column[cell_y] = row
             end
 
-            table.insert(row, particle)
+            table.insert(row, particle_i)
 
-            local radius = particle[_radius]
-            env.min_x = math.min(env.min_x, particle[_x] - radius)
-            env.min_y = math.min(env.min_y, particle[_y] - radius)
-            env.max_x = math.max(env.max_x, particle[_x] + radius)
-            env.max_y = math.max(env.max_y, particle[_y] + radius)
+            local r = env.particles[radius]
+            env.min_x = math.min(env.min_x, env.particles[x] - r)
+            env.min_y = math.min(env.min_y, env.particles[y] - r)
+            env.max_x = math.max(env.max_x, env.particles[x] + r)
+            env.max_y = math.max(env.max_y, env.particles[y] + r)
         end
 
-        for _, batch in ipairs(batches) do
-            for _, particle in ipairs(white_env.particles) do
-                add_to_spatial_hash(white_env, particle)
-            end
+        for particle_i = 1, white_env.n_particles do
+            add_to_spatial_hash(white_env, particle_i)
+        end
 
-            for _, particle in ipairs(yolk_env.particles) do
-                add_to_spatial_hash(yolk_env, particle)
-            end
+        for particle_i = 1, yolk_env.n_particles do
+            add_to_spatial_hash(yolk_env, particle_i)
         end
 
         -- TODO
@@ -577,24 +637,26 @@ function SimulationHandler:_step(delta, batches)
             local total_mass = 0
 
             local centroid_x, centroid_y = 0, 0
-            local n = #env.particles
 
-            for _, particle in ipairs(env.particles) do
-                particle[_velocity_x] = (particle[_x] - particle[_previous_x]) / sub_delta
-                particle[_velocity_y] = (particle[_y] - particle[_previous_y]) / sub_delta
+            local particles = env.particles
+            for particle_i = 1, env.n_particles do
+                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass = _get_property_indices(particle_i)
 
-                centroid_x = centroid_x + particle[_x]
-                centroid_y = centroid_y + particle[_y]
+                particles[velocity_x] = (particles[x] - particles[previous_x]) / sub_delta
+                particles[velocity_y] = (particles[y] - particles[previous_y]) / sub_delta
 
-                center_of_mass_x = center_of_mass_x + particle[_x] * particle[_mass]
-                center_of_mass_y = center_of_mass_y + particle[_y] * particle[_mass]
-                total_mass = total_mass + particle[_mass]
+                centroid_x = centroid_x + particles[x]
+                centroid_y = centroid_y + particles[y]
+
+                center_of_mass_x = center_of_mass_x + particles[x] * particles[mass]
+                center_of_mass_y = center_of_mass_y + particles[y] * particles[mass]
+                total_mass = total_mass + particles[mass]
             end
 
             env.center_of_mass_x = center_of_mass_x / total_mass
             env.center_of_mass_y = center_of_mass_y / total_mass
-            env.centroid_x = centroid_x / n
-            env.centroid_y = centroid_y / n
+            env.centroid_x = centroid_x / env.n_particles
+            env.centroid_y = centroid_y / env.n_particles
         end
 
         post_solve(white_env)
@@ -657,24 +719,10 @@ function SimulationHandler:_draw(batches)
         local texture_w, texture_h = self._particle_texture:getDimensions()
         local padding = self._settings.particle_texture_padding
 
-        local draw_particle = function(particle)
-            local radius = particle[_radius]
-            local scale_x = (2 * radius) / (texture_w - 2 * padding)
-            local scale_y = (2 * radius) / (texture_h - 2 * padding)
+        local draw_env = function(env, canvas)
+            local canvas_width, canvas_height = canvas:getDimensions()
 
-            love.graphics.draw(self._particle_texture,
-                particle[_x], particle[_y],
-                0,
-                scale_x, scale_y,
-                0.5 * texture_w, 0.5 * texture_h
-            )
-        end
-
-        do -- egg whites
-            local env = self._last_egg_white_env
-            local canvas_width, canvas_height = self._egg_white_canvas:getDimensions()
-
-            love.graphics.setCanvas(self._egg_white_canvas)
+            love.graphics.setCanvas(canvas)
             love.graphics.clear(0, 0, 0, 0)
 
             -- translate to canvas local space
@@ -684,38 +732,27 @@ function SimulationHandler:_draw(batches)
                 -env.centroid_y + canvas_height / 2
             )
 
-            for _, batch in ipairs(batches) do
-                for _, particle in ipairs(batch.white_particles) do
-                    draw_particle(particle)
-                end
+            local particles = env.particles
+            for particle_i = 1, env.n_particles do
+                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass = _get_property_indices(particle_i)
+
+                local scale_x = (2 * particles[radius]) / (texture_w - 2 * padding)
+                local scale_y = (2 * particles[radius]) / (texture_h - 2 * padding)
+
+                love.graphics.draw(self._particle_texture,
+                    particles[x], particles[y],
+                    0,
+                    scale_x, scale_y,
+                    0.5 * texture_w, 0.5 * texture_h
+                )
             end
 
             love.graphics.pop()
             love.graphics.setCanvas(nil)
         end
 
-        do -- egg yolks
-            local env = self._last_egg_yolk_env
-            local canvas_width, canvas_height = self._egg_yolk_canvas:getDimensions()
-
-            love.graphics.setCanvas(self._egg_yolk_canvas)
-            love.graphics.clear(0, 0, 0, 0)
-
-            love.graphics.push()
-            love.graphics.translate(
-                -env.centroid_x + canvas_width / 2,
-                -env.centroid_y + canvas_height / 2
-            )
-
-            for _, batch in ipairs(batches) do
-                for _, particle in ipairs(batch.yolk_particles) do
-                    draw_particle(particle)
-                end
-            end
-
-            love.graphics.pop()
-            love.graphics.setCanvas(nil)
-        end
+        draw_env(self._last_egg_white_env, self._egg_white_canvas)
+        draw_env(self._last_egg_yolk_env, self._egg_yolk_canvas)
 
         love.graphics.pop()
         self._canvases_need_update = false
@@ -735,11 +772,10 @@ function SimulationHandler:_draw(batches)
     end
 
     draw_canvas(self._egg_white_canvas, self._last_egg_white_env)
-    draw_canvas(self._egg_white_canvas, self._last_egg_yolk_env)
+    draw_canvas(self._egg_yolk_canvas, self._last_egg_yolk_env)
 
     love.graphics.pop()
 end
-
 
 --- @brief [internal] helper for update/draw, collects batches and asserts type correctness
 function SimulationHandler:_collect_batches(batches)
