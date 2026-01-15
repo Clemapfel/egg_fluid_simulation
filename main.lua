@@ -13,9 +13,7 @@ egg.SimulationHandler = require "egg_fluid_simulation.simulation_handler"
 
 local simulation_handler = nil -- simulation instance
 local egg_batches = {} -- Table<SimulationHandlerBatchID>
-local debug_example_setting = {
-    n_eggs = 0
-}
+
 
 -- TODO: remove
 DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
@@ -25,10 +23,10 @@ DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
         local w, h = love.graphics.getDimensions()
         local mid_w, mid_h = w / 2, h / 2
         local range_x, range_y = w * 0.25, h * 0.25
-        simulation_handler:add(
+        table.insert(egg_batches, simulation_handler:add(
             rt.random.number(mid_w - range_x, mid_w + range_x),
             rt.random.number(mid_h - range_y, mid_h + range_y)
-        )
+        ))
     end
 end)
 -- TODO
@@ -39,20 +37,16 @@ end)
 love.load = function()
     -- create the handler instance, it currently holds no eggs
     simulation_handler = egg.SimulationHandler()
-
-    -- add 5 egg batches, the return value is the batch id which we need
-    egg_batches = {}
-    for i = 1, debug_example_setting.n_eggs do
-        -- add a batch, return value is batch id
-        local batch_id = simulation_handler:add(debug_example_setting.egg_area or nil)
-
-        -- store batch id for later
-        table.insert(egg_batches, batch_id)
-    end
 end
 
 -- update loop
 love.update = function(delta)
+    local x, y = love.mouse.getPosition()
+
+    for batch in values(egg_batches) do
+        simulation_handler:set_target_position(batch, x, y)
+    end
+
     -- update all egg batches
     simulation_handler:update(delta)
 
