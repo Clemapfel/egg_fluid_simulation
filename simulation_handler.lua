@@ -1222,7 +1222,7 @@ function SimulationHandler:_draw(batches)
         b = b * a * composite_alpha
         love.graphics.setColor(r, g, b, a)
 
-        love.graphics.setShader(self._threshold_shader)
+        --love.graphics.setShader(self._threshold_shader)
         love.graphics.draw(canvas, canvas_x, canvas_y)
         love.graphics.setShader()
     end
