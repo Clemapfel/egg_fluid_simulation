@@ -441,22 +441,23 @@ function SimulationHandler:_new_batch(
         return math.mix(min, max, t)
     end
 
-    -- generate 2d vector, magnitude follows normal distribution around center
-    local random_normal = function(x_radius, y_radius)
-        local standard_deviation_x = x_radius / 1.96 -- ~95% of gaussian falls into [0, 1]
-        local standard_deviation_y = y_radius / 1.96
+    -- uniformly distribute points across the disk using fibonacci spiral
+    local fibonacci_spiral = function(index, total, x_radius, y_radius)
+        local golden_ratio = (1 + math.sqrt(5)) / 2
+        local golden_angle = 2 * math.pi / (golden_ratio * golden_ratio)
 
-        local dx = love.math.randomNormal(standard_deviation_x, 0)
-        local dy = love.math.randomNormal(standard_deviation_y, 0)
+        local r = math.sqrt(index / total)
+        local theta = index * golden_angle
 
-        return math.normalize(dx, dy)
+        local x = r * x_radius * math.cos(theta)
+        local y = r * y_radius * math.sin(theta)
+
+        return x, y
     end
 
-    local add_particle = function(array, settings, x_radius, y_radius)
-        -- generate position on circle, with gaussian distribution, mean at center
-        local angle = random_number(0, 2 * math.pi)
-
-        local dx, dy = random_normal(x_radius, y_radius)
+    local add_particle = function(array, settings, x_radius, y_radius, index, total)
+        -- generate position
+        local dx, dy = fibonacci_spiral(index, total, x_radius, y_radius)
         local x = center_x + dx
         local y = center_y + dy
 
@@ -479,19 +480,21 @@ function SimulationHandler:_new_batch(
         array[n + _mass_offset] = mass
     end
 
-    for _ = 1, white_n_particles do
+    for i = 1, white_n_particles do
         add_particle(
             batch.white_particles,
             self._settings.egg_white,
-            white_x_radius, white_y_radius
+            white_x_radius, white_y_radius,
+            i, white_n_particles
         )
     end
 
-    for _ = 1, yolk_n_particles do
+    for i = 1, yolk_n_particles do
         add_particle(
             batch.yolk_particles,
             self._settings.egg_yolk,
-            yolk_x_radius, yolk_y_radius
+            yolk_x_radius, yolk_y_radius,
+            i, yolk_n_particles
         )
     end
 
