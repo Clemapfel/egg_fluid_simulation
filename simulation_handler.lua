@@ -18,7 +18,7 @@ local default_settings = {
 
     -- particle configs for egg white
     egg_white = {
-        particle_density = 1 / 64, -- n particles / px^2
+        particle_density = 1 / 128, -- n particles / px^2
         min_radius = 4, -- px
         max_radius = 4, -- px
         min_mass = 1, -- fraction
@@ -39,7 +39,7 @@ local default_settings = {
 
     -- particle configs for egg yolk
     egg_yolk = {
-        particle_density = 1 / 128,
+        particle_density = 1 / 256,
         min_radius = 4,
         max_radius = 7,
         min_mass = 1,
@@ -166,7 +166,7 @@ function SimulationHandler:remove(batch_id)
     self._total_n_white_particles = self._total_n_white_particles - batch.n_white_particles
     self._total_n_yolk_particles = self._total_n_yolk_particles - batch.n_yolk_particles
 
-    -- env updated next step
+    self:_remove(batch.white_particle_indices, batch.yolk_particle_indices)
 end
 
 --- @brief set the target position a batch should move to
@@ -581,7 +581,7 @@ function SimulationHandler:_new_batch(
 
         return n
     end
-    
+
     local batch_id = self._current_batch_id
     self._current_batch_id = self._current_batch_id + 1
 
@@ -609,6 +609,73 @@ function SimulationHandler:_new_batch(
     batch.n_yolk_particles = yolk_n_particles
 
     return batch_id, batch
+end
+
+--- @brief [internal] remove particle data from shared array
+function SimulationHandler:_remove(white_indices, yolk_indices)
+
+    local function remove_particles(indices, data, list_name)
+        if not indices or #indices == 0 then return end
+
+        local stride = _stride
+        local total_particles = #data / stride
+
+        -- mark particles to remove
+        local remove = {}
+        for _, base in ipairs(indices) do
+            local p = math.floor((base - 1) / stride) + 1
+            remove[p] = true
+        end
+
+        -- compute new index for each particle (prefix sum)
+        local new_index = {}
+        local write = 0
+        for read = 1, total_particles do
+            if not remove[read] then
+                write = write + 1
+                new_index[read] = write
+            end
+        end
+
+        -- compact particle data
+        for read = 1, total_particles do
+            local write_i = new_index[read]
+            if write_i and write_i ~= read then
+                local src = (read  - 1) * stride + 1
+                local dst = (write_i - 1) * stride + 1
+                for o = 0, stride - 1 do
+                    data[dst + o] = data[src + o]
+                end
+            end
+        end
+
+        -- truncate array (only table.remove usage)
+        for i = write * stride + 1, #data do
+            data[i] = nil
+        end
+
+        -- update only affected batches
+        for _, batch in pairs(self._batch_id_to_batch) do
+            local list = batch[list_name]
+            if list then
+                local n = #list
+                local w = 1
+                for r = 1, n do
+                    local old_base = list[r]
+                    local old_p = math.floor((old_base - 1) / stride) + 1
+                    local new_p = new_index[old_p]
+                    if new_p then
+                        list[w] = (new_p - 1) * stride + 1
+                        w = w + 1
+                    end
+                end
+                for i = w, n do list[i] = nil end
+            end
+        end
+    end
+
+    remove_particles(white_indices, self._white_data, "white_particle_indices")
+    remove_particles(yolk_indices,  self._yolk_data,  "yolk_particle_indices")
 end
 
 --- @brief [internal] perform a full step of the simulation, includes substeps
@@ -914,6 +981,14 @@ function SimulationHandler:_step(delta)
                                 )
 
                                 if should_apply then
+                                    if data[self_batch_id] ~= data[other_batch_id] then
+                                        local n = 2
+                                        self_cx = self_cx * n
+                                        self_cy = self_cy * n
+                                        other_cx = other_cx * n
+                                        other_cy = other_cy * n
+                                    end
+
                                     data[self_x]  = data[self_x]  + self_cx
                                     data[self_y]  = data[self_y]  + self_cy
                                     data[other_x] = data[other_x] + other_cx
@@ -960,7 +1035,7 @@ function SimulationHandler:_step(delta)
         end
 
         collide_particles(white_env)
-        collide_particles(yolk_env)
+        --collide_particles(yolk_env)
 
         -- update velocity from position change, compute centers
         local function post_solve(env)
@@ -1103,9 +1178,9 @@ function SimulationHandler:_draw(batches)
         love.graphics.setLineWidth(1)
         for _, batch in pairs(self._batch_id_to_batch) do
             love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.circle("fill", batch.target_x, batch.target_y, 5)
+            --love.graphics.circle("fill", batch.target_x, batch.target_y, 5)
             love.graphics.setColor(0, 0, 0, 0, 1)
-            love.graphics.circle("line", batch.target_x, batch.target_y, 5)
+            --love.graphics.circle("line", batch.target_x, batch.target_y, 5)
         end
 
         love.graphics.pop()
@@ -1124,7 +1199,7 @@ function SimulationHandler:_draw(batches)
         end
     end
 
-    local composite_alpha = debugger.get("composite_alpha") -- TODO self._settings.composite_alpha
+    local composite_alpha = 1 -- debugger.get("composite_alpha") -- TODO self._settings.composite_alpha
     safe_send(self._threshold_shader, "threshold", debugger.get("threshold_shader_threshold")) -- TODO self._settings.threshold_shader_threshold)
     safe_send(self._threshold_shader, "smoothness", debugger.get("threshold_shader_smoothness")) -- TODO self._settings.threshold_shader_smoothness)
 
@@ -1133,7 +1208,8 @@ function SimulationHandler:_draw(batches)
         local canvas_x, canvas_y = env.centroid_x - 0.5 * canvas_width,
             env.centroid_y - 0.5 * canvas_height
 
-        love.graphics.setBlendMode("alpha", "premultiplied")
+        require "common.blend_mode"
+        rt.graphics.set_blend_mode(rt.BlendMode.ADD, rt.BlendMode.ADD) --love.graphics.setBlendMode("alpha", "premultiplied")
 
         -- premultiply color
         local r, g, b, a = (unpack or table.unpack)(color)

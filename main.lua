@@ -13,8 +13,13 @@ egg.SimulationHandler = require "egg_fluid_simulation.simulation_handler"
 
 local simulation_handler = nil -- simulation instance
 local egg_batches = {} -- Table<SimulationHandlerBatchID>
-local init = function()
-    for _ = 1, 1 do
+
+-- TODO: remove
+DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
+    if which == "h" then
+        simulation_handler:_reinitialize()
+        egg_batches = {}
+    elseif which == "j" then
         local w, h = love.graphics.getDimensions()
         local mid_w, mid_h = w / 2, h / 2
         local range_x, range_y = w * 0.25, h * 0.25
@@ -22,15 +27,12 @@ local init = function()
             rt.random.number(mid_w - range_x, mid_w + range_x),
             rt.random.number(mid_h - range_y, mid_h + range_y)
         ))
-    end
-end
-
--- TODO: remove
-DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
-    if which == "h" then
-        simulation_handler:_reinitialize()
-        egg_batches = {}
-        init()
+    elseif which == "g" then
+        local first = egg_batches[1]
+        if first ~= nil then
+            table.remove(egg_batches, 1)
+            simulation_handler:remove(first)
+        end
     end
 end)
 -- TODO
@@ -41,7 +43,6 @@ end)
 love.load = function()
     -- create the handler instance, it currently holds no eggs
     simulation_handler = egg.SimulationHandler()
-    init()
 end
 
 -- update loop
