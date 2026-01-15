@@ -18,44 +18,44 @@ local default_settings = {
 
     -- particle configs for egg white
     egg_white = {
-        particle_density = 1 / 32, -- n particles / px^2
+        particle_density = 1 / 64, -- n particles / px^2
         min_radius = 4, -- px
         max_radius = 4, -- px
         min_mass = 1, -- fraction
-        max_mass = 1, -- fraction
+        max_mass = 3, -- fraction
         damping = 0.7, -- in [0, 1], higher is more dampened
 
         color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
         default_radius = 50, -- total radius of egg white at rest, px
 
         collision_strength = 1, -- in [0, 1]
-        collision_overlap_fraction = 10, -- > 0
+        collision_overlap_factor = 10, -- > 0
 
         cohesion_strength = 0.8, -- in [0, 1]
-        cohesion_interaction_distance_fraction = 2,
+        cohesion_interaction_distance_factor = 2,
 
-        follow_strength = 0.99, -- in [0, 1]
+        follow_strength = 1 - 0.001, -- in [0, 1]
     },
 
     -- particle configs for egg yolk
     egg_yolk = {
-        particle_density = 1 / 64,
+        particle_density = 1 / 128,
         min_radius = 4,
-        max_radius = 4,
+        max_radius = 7,
         min_mass = 1,
-        max_mass = 1,
+        max_mass = 1.5,
         damping = 0.5,
 
         color = { 255 / 255, 129 / 255, 0 / 255, 1 },
         default_radius = 16, -- total radius of yolk at rest, px
 
         collision_strength = 1, -- in [0, 1]
-        collision_overlap_fraction = 1, -- > 0
+        collision_overlap_factor = 1, -- > 0
 
         cohesion_strength = 0.8, -- in [0, 1]
-        cohesion_interaction_distance_fraction = 2,
+        cohesion_interaction_distance_factor = 2,
 
-        follow_strength = 0, -- in [0, 1]
+        follow_strength = 1 - 0.0009, -- in [0, 1]
     },
 
     n_sub_steps = 1, -- number of solver sub steps
@@ -63,7 +63,6 @@ local default_settings = {
     -- render texture config
     canvas_msaa = 0, -- msaa for render textures
     particle_texture_padding = 3, -- px
-    texture_format = "rgba8", -- love.PixelFormat
     particle_texture_resolution_factor = 4, -- fraction
     texture_scale = 4, -- fraction
 
@@ -407,7 +406,7 @@ function SimulationHandler:_initialize_particle_texture()
 
 
     self._particle_texture = love.graphics.newCanvas(canvas_width, canvas_height, {
-            format = "rgba16", -- first [0, 1] format that has 4 components
+            format = "rgba8", -- first [0, 1] format that has 4 components
             msaa = 0,
             readable = true,
             dpiscale = 1
@@ -561,8 +560,8 @@ function SimulationHandler:_new_batch(
         -- manually gives more freedom when fine-tuning the simulation
         local t = random_normal(0, 1)
         local mass = math.mix(
-            debugger.get("min_mass"), -- TODO settings.min_mass,
-            debugger.get("max_mass"), -- TODO settings.max_mass,
+            settings.min_mass,
+            settings.max_mass,
             t
         )
         local radius = math.mix(settings.min_radius, settings.max_radius, t)
@@ -619,39 +618,18 @@ function SimulationHandler:_step(delta)
     local n_sub_steps = debugger.get("n_sub_steps")-- TODO settings.n_sub_steps
     local sub_delta = delta / n_sub_steps
 
-    local collision_overlap_fraction = math.max(0, debugger.get("collision_overlap_fraction"))-- TODO current_settings.collision_strength)
-    local cohesion_interaction_distance_fraction = math.max(0, debugger.get("cohesion_interaction_distance_fraction")) -- TODO current_settings.cohesion_interaction_distance_fraction
-
-    local follow_compliance, collision_compliance, cohesion_compliance
-    local should_apply_follow, should_apply_collision, should_apply_cohesion
-
-    do
-        -- convert settings settings to XPBD compliance parameters
-        local function strength_to_compliance(strength)
-            local alpha = 1 - math.clamp(strength, 0, 1)
-            local alpha_per_substep = alpha / (sub_delta^2)
-            return alpha_per_substep
-        end
-
-        local collision_strength = debugger.get("collision_strength") -- TODO current_settings.collision_strength
-        local cohesion_strength = debugger.get("cohesion_strength") -- TODO current_settings.cohesion_strength
-        local follow_strength = debugger.get("follow_strength") -- TODO current_settings.follow_strength)
-
-        follow_compliance = strength_to_compliance(follow_strength)
-        should_apply_follow = follow_strength > 0
-
-        collision_compliance = strength_to_compliance(collision_strength)
-        should_apply_collision = collision_strength > 0
-
-        cohesion_compliance = strength_to_compliance(cohesion_strength)
-        should_apply_cohesion = cohesion_strength > 0
+    -- convert settings settings to XPBD compliance parameters
+    local function strength_to_compliance(strength)
+        local alpha = 1 - math.clamp(strength, 0, 1)
+        local alpha_per_substep = alpha / (sub_delta^2)
+        return alpha_per_substep
     end
 
     -- setup environments for yolks and white separately
     local create_environment = function(current_settings, old_env_maybe)
         local spatial_hash_cell_radius = math.max(
-            collision_overlap_fraction,
-            cohesion_interaction_distance_fraction
+            current_settings.collision_overlap_factor,
+            current_settings.cohesion_interaction_distance_factor
         ) * 2 * current_settings.max_radius
 
         if old_env_maybe == nil then
@@ -674,7 +652,8 @@ function SimulationHandler:_step(delta)
                 center_of_mass_x = 0, -- set in post-solve, px
                 center_of_mass_y = 0,
                 centroid_x = 0,
-                centroid_y = 0
+                centroid_y = 0,
+                settings = current_settings
             }
         else
             -- if old env present, keep allocated to keep gc / allocation pressure low
@@ -697,6 +676,7 @@ function SimulationHandler:_step(delta)
             env.max_x = -math.huge
             env.max_y = -math.huge
             env.spatial_hash_cell_radius = spatial_hash_cell_radius
+            env.settings = current_settings
 
             return env
         end
@@ -760,7 +740,11 @@ function SimulationHandler:_step(delta)
 
         -- make all particles move towards their target
         local function move_towards_target(env)
-            if not should_apply_follow then return end
+            local follow_strength = env.settings.follow_strength
+            if follow_strength <= 0 then return end
+
+            local follow_compliance = strength_to_compliance(follow_strength)
+
             local data = env.particles
             for particle_i = 1, env.n_particles do
                 local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
@@ -875,6 +859,18 @@ function SimulationHandler:_step(delta)
         local function collide_particles(env)
             local data = env.particles
 
+            local collision_overlap_factor = math.max(0, debugger.get("collision_overlap_factor") or env.settings.collision_strength)
+            local cohesion_interaction_distance_factor = math.max(0, debugger.get("cohesion_interaction_distance_factor") or env.settings.cohesion_interaction_distance_factor)
+
+            local collision_strength = debugger.get("collision_strength") or env.settings.collision_strength
+            local cohesion_strength = debugger.get("cohesion_strength") or env.settings.cohesion_strength
+
+            local collision_compliance = strength_to_compliance(collision_strength)
+            local should_apply_collision = collision_strength > 0
+
+            local cohesion_compliance = strength_to_compliance(cohesion_strength)
+            local should_apply_cohesion = cohesion_strength > 0
+
             -- iterate neighbors of all particles
             for self_i = 1, env.n_particles do
                 local self_x, self_y, self_z, self_velocity_x, self_velocity_y, self_previous_x, self_previous_y, self_radius, self_mass, self_inverse_mass, self_batch_id = _get_property_indices(self_i)
@@ -901,14 +897,14 @@ function SimulationHandler:_step(delta)
                             local other_x, other_y, other_z, other_velocity_x, other_velocity_y, other_previous_x, other_previous_y, other_radius, other_mass, other_inverse_mass, other_batch_id = _get_property_indices(other_i)
 
                             -- minimum allowable distance between particles
-                            local min_distance = collision_overlap_fraction * (data[self_radius] + data[other_radius])
+                            local min_distance = collision_overlap_factor * (data[self_radius] + data[other_radius])
 
                             if should_apply_collision
                                 and min_distance > math.eps
                                 and math.distance(
-                                data[self_x], data[self_y],
-                                data[other_x], data[other_y]
-                            ) <= min_distance
+                                    data[self_x], data[self_y],
+                                    data[other_x], data[other_y]
+                                ) <= min_distance
                             then
                                 local should_apply, self_cx, self_cy, other_cx, other_cy = enforce_distance(
                                     data[self_x], data[self_y],
@@ -926,14 +922,14 @@ function SimulationHandler:_step(delta)
                             end
 
                             -- maximum distance in which particles considers adherence
-                            local interaction_distance = cohesion_interaction_distance_fraction * (data[self_radius] + data[other_radius])
+                            local interaction_distance = cohesion_interaction_distance_factor * (data[self_radius] + data[other_radius])
 
                             if should_apply_cohesion
                                 and data[self_batch_id] == data[other_batch_id]
                                 and math.distance(
-                                data[self_x], data[self_y],
-                                data[other_x], data[other_y]
-                            ) < interaction_distance
+                                    data[self_x], data[self_y],
+                                    data[other_x], data[other_y]
+                                ) <= interaction_distance
                             then
                                 local should_apply, self_cx, self_cy, other_cx, other_cy = enforce_distance(
                                     data[self_x], data[self_y],
@@ -1146,7 +1142,7 @@ function SimulationHandler:_draw(batches)
         b = b * a * composite_alpha
         love.graphics.setColor(r, g, b, a)
 
-        love.graphics.setShader(self._threshold_shader)
+        -- TODO love.graphics.setShader(self._threshold_shader)
         love.graphics.draw(canvas, canvas_x, canvas_y)
         love.graphics.setShader()
     end
