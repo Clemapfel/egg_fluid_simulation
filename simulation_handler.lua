@@ -29,9 +29,11 @@ local default_settings = {
         default_radius = 50, -- total radius of egg white at rest, px
 
         collision_strength = 1, -- in [0, 1]
-        collision_overlap_fraction = 1, -- > 0
+        collision_overlap_fraction = 10, -- > 0
 
         cohesion_strength = 0.8, -- in [0, 1]
+        cohesion_interaction_distance_fraction = 2,
+
         follow_strength = 0.99, -- in [0, 1]
     },
 
@@ -51,7 +53,9 @@ local default_settings = {
         collision_overlap_fraction = 1, -- > 0
 
         cohesion_strength = 0.8, -- in [0, 1]
-        follow_strength = 0.99, -- in [0, 1]
+        cohesion_interaction_distance_fraction = 2,
+
+        follow_strength = 0, -- in [0, 1]
     },
 
     n_sub_steps = 1, -- number of solver sub steps
@@ -61,6 +65,44 @@ local default_settings = {
     particle_texture_padding = 3, -- px
     texture_format = "rgba8", -- love.PixelFormat
     particle_texture_resolution_factor = 4, -- fraction
+    texture_scale = 4, -- fraction
+
+    -- shader config
+    composite_alpha = 0.5,
+
+    threshold_shader_threshold = 0.5, -- in [0, 1]
+    threshold_shader_smoothness = 0.001,
+
+    texture_format = (function()
+        -- texture format needs to have non [0, 1] range, find first available on this machine
+        local available_formats
+        if love.getVersion() >= 12 then
+            available_formats = love.graphics.getTextureFormats({
+                canvas = true
+            })
+        else
+            available_formats = love.graphics.getCanvasFormats()
+        end
+
+        local texture_format = "rgba8"
+        --[[ TODO
+        for _, format in ipairs({
+            "r32f",
+            "r16f",
+            "rg32f",
+            "rg16f",
+            "rgba32f",
+            "rgba16f"
+        }) do
+            if available_formats[format] == true then
+                texture_format = format
+                break
+            end
+        end
+        ]]
+
+        return texture_format
+    end)()
 }
 
 --- @brief add a new batch to the simulation
@@ -163,7 +205,7 @@ function SimulationHandler:draw(batches)
         self:_assert(batches, "table")
     end
 
-    self:_draw(self:_collect_batches(batches))
+    self:_draw()
 end
 
 --- @brief draw all particles below the z render priority
@@ -223,10 +265,11 @@ function SimulationHandler:update(delta, batches)
 
     -- accumulate delta time, run sim at fixed framerate for better stability
     self._elapsed = self._elapsed + delta
-    local step = settings.step_delta
+    local step = debugger.get("step_delta") -- TODO settings.step_delta
     local n_steps = 0
     while self._elapsed >= step do
-        self:_step(settings.step_delta, self:_collect_batches(batches))
+        self:_step(step)
+        self._elapsed = self._elapsed - step
 
         -- safety check to prevent death spiral on lag frames
         n_steps = n_steps + 1
@@ -284,7 +327,11 @@ function SimulationHandler:_reinitialize()
     self._batch_id_to_batch = {}
     self._current_batch_id = 1
     self._n_batches = 0
+
+    self._white_data = {}
     self._total_n_white_particles = 0
+
+    self._yolk_data = {}
     self._total_n_yolk_particles = 0
 
     self._canvases_need_update = false
@@ -356,8 +403,11 @@ function SimulationHandler:_initialize_particle_texture()
     -- create canvas, transparent outer padding so derivative on borders is 0
     local canvas_width = (radius + padding) * 2
     local canvas_height = canvas_width
+
+
+
     self._particle_texture = love.graphics.newCanvas(canvas_width, canvas_height, {
-            format = settings.texture_format,
+            format = "rgba16", -- first [0, 1] format that has 4 components
             msaa = 0,
             readable = true,
             dpiscale = 1
@@ -463,16 +513,21 @@ function SimulationHandler:_new_batch(
     yolk_x_radius, yolk_y_radius, yolk_n_particles
 )
     local batch = {
-        white_particles = {},
-        yolk_particles = {},
+        white_particle_indices = {},
+        yolk_particle_indices = {},
         target_x = center_x,
         target_y = center_y
     }
 
     -- generate uniformly distributed value in interval
-    local random_number = function(min, max)
+    local random_uniform = function(min, max)
         local t = love.math.random(0, 1)
         return math.mix(min, max, t)
+    end
+
+    -- generate normally distributed value in interval
+    local random_normal = function(x_radius, y_radius)
+        return math.clamp(love.math.randomNormal(0.25, 0.5), 0, 1)
     end
 
     -- uniformly distribute points across the disk using fibonacci spiral
@@ -504,8 +559,12 @@ function SimulationHandler:_new_batch(
         -- mass and radius use the same interpolation factor, since volume and mass are correlated
         -- we could compute mass as a function of radius, but being able to choose the mass distribution
         -- manually gives more freedom when fine-tuning the simulation
-        local t = random_number(0, 1)
-        local mass = math.mix(settings.min_mass, settings.max_mass, t)
+        local t = random_normal(0, 1)
+        local mass = math.mix(
+            debugger.get("min_mass"), -- TODO settings.min_mass,
+            debugger.get("max_mass"), -- TODO settings.max_mass,
+            t
+        )
         local radius = math.mix(settings.min_radius, settings.max_radius, t)
 
         local n = #array + 1
@@ -520,29 +579,31 @@ function SimulationHandler:_new_batch(
         array[n + _mass_offset] = mass
         array[n + _inverse_mass_offset] = 1 / mass
         array[n + _batch_id] = batch_id
+
+        return n
     end
     
     local batch_id = self._current_batch_id
     self._current_batch_id = self._current_batch_id + 1
 
     for i = 1, white_n_particles do
-        add_particle(
-            batch.white_particles,
+        table.insert(batch.white_particle_indices, add_particle(
+            self._white_data,
             self._settings.egg_white,
             white_x_radius, white_y_radius,
             i, white_n_particles,
             batch_id
-        )
+        ))
     end
 
     for i = 1, yolk_n_particles do
-        add_particle(
-            batch.yolk_particles,
+        table.insert(batch.yolk_particle_indices, add_particle(
+            self._yolk_data,
             self._settings.egg_yolk,
             yolk_x_radius, yolk_y_radius,
             i, yolk_n_particles,
             batch_id
-        )
+        ))
     end
 
     batch.n_white_particles = white_n_particles
@@ -552,33 +613,64 @@ function SimulationHandler:_new_batch(
 end
 
 --- @brief [internal] perform a full step of the simulation, includes substeps
-function SimulationHandler:_step(delta, batches)
+function SimulationHandler:_step(delta)
     local settings = self._settings
 
-    local n_sub_steps = settings.n_sub_steps
+    local n_sub_steps = debugger.get("n_sub_steps")-- TODO settings.n_sub_steps
     local sub_delta = delta / n_sub_steps
+
+    local collision_overlap_fraction = math.max(0, debugger.get("collision_overlap_fraction"))-- TODO current_settings.collision_strength)
+    local cohesion_interaction_distance_fraction = math.max(0, debugger.get("cohesion_interaction_distance_fraction")) -- TODO current_settings.cohesion_interaction_distance_fraction
+
+    local follow_compliance, collision_compliance, cohesion_compliance
+    local should_apply_follow, should_apply_collision, should_apply_cohesion
+
+    do
+        -- convert settings settings to XPBD compliance parameters
+        local function strength_to_compliance(strength)
+            local alpha = 1 - math.clamp(strength, 0, 1)
+            local alpha_per_substep = alpha / (sub_delta^2)
+            return alpha_per_substep
+        end
+
+        local collision_strength = debugger.get("collision_strength") -- TODO current_settings.collision_strength
+        local cohesion_strength = debugger.get("cohesion_strength") -- TODO current_settings.cohesion_strength
+        local follow_strength = debugger.get("follow_strength") -- TODO current_settings.follow_strength)
+
+        follow_compliance = strength_to_compliance(follow_strength)
+        should_apply_follow = follow_strength > 0
+
+        collision_compliance = strength_to_compliance(collision_strength)
+        should_apply_collision = collision_strength > 0
+
+        cohesion_compliance = strength_to_compliance(cohesion_strength)
+        should_apply_cohesion = cohesion_strength > 0
+    end
 
     -- setup environments for yolks and white separately
     local create_environment = function(current_settings, old_env_maybe)
+        local spatial_hash_cell_radius = math.max(
+            collision_overlap_fraction,
+            cohesion_interaction_distance_fraction
+        ) * 2 * current_settings.max_radius
+
         if old_env_maybe == nil then
             return {
                 particles = {}, -- Table<Number>, particles inline
                 collided = {}, -- Table<ParticleIndex, Set<ParticleIndex>>
 
                 spatial_hash = {}, -- Table<Table<particle_index>>
-                spatial_hash_cell_radius = current_settings.min_radius, -- px
+                spatial_hash_cell_radius = spatial_hash_cell_radius, -- px
 
-                damping = current_settings.damping,
+                damping = debugger.get("damping"), -- TODO current_settings.damping,
 
                 min_x = math.huge, -- particle position bounds, px
                 min_y = math.huge,
                 max_x = -math.huge,
                 max_y = -math.huge,
 
-                target_x = 0,
-                target_y = 0,
-
                 n_particles = 0,
+
                 center_of_mass_x = 0, -- set in post-solve, px
                 center_of_mass_y = 0,
                 centroid_x = 0,
@@ -588,7 +680,6 @@ function SimulationHandler:_step(delta, batches)
             -- if old env present, keep allocated to keep gc / allocation pressure low
             local env = old_env_maybe
 
-            table.clear(env.particles)
             for _, column in pairs(env.spatial_hash) do
                 for _, row in pairs(column) do
                     table.clear(row)
@@ -601,11 +692,11 @@ function SimulationHandler:_step(delta, batches)
                 table.clear(entry)
             end
 
-            env.n_particles = 0
             env.min_x = math.huge
             env.min_y = math.huge
             env.max_x = -math.huge
             env.max_y = -math.huge
+            env.spatial_hash_cell_radius = spatial_hash_cell_radius
 
             return env
         end
@@ -614,23 +705,16 @@ function SimulationHandler:_step(delta, batches)
     local white_env = create_environment(self._settings.egg_white, self._last_egg_white_env)
     local yolk_env = create_environment(self._settings.egg_yolk, self._last_egg_yolk_env)
 
-    -- collect active particles
-    for _, batch in ipairs(batches) do
-        for _, particle_property in ipairs(batch.white_particles) do
-            table.insert(white_env.particles, particle_property)
-        end
-        white_env.n_particles = white_env.n_particles + batch.n_white_particles
+    white_env.particles = self._white_data
+    white_env.n_particles = self._total_n_white_particles
 
-        for _, particle_property in ipairs(batch.yolk_particles) do
-            table.insert(yolk_env.particles, particle_property)
-        end
-        yolk_env.n_particles = yolk_env.n_particles + batch.n_yolk_particles
-    end
+    yolk_env.particles = self._yolk_data
+    yolk_env.n_particles = self._total_n_yolk_particles
 
     for sub_step_i = 1, n_sub_steps do
-        -- pre solve: integrate velocity
-        local pre_solve = function(env)
-            local damping = 1 - env.damping
+        -- pre-solve: integrate velocity
+        local function pre_solve(env)
+            local damping = env.damping
             local particles = env.particles
             for particle_i = 1, env.n_particles do
                 local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
@@ -638,8 +722,8 @@ function SimulationHandler:_step(delta, batches)
                 particles[previous_x] = particles[x]
                 particles[previous_y] = particles[y]
 
-                particles[velocity_x] = particles[velocity_x] * damping * sub_delta
-                particles[velocity_y] = particles[velocity_y] * damping * sub_delta
+                particles[velocity_x] = particles[velocity_x] * damping
+                particles[velocity_y] = particles[velocity_y] * damping
 
                 particles[x] = particles[x] + sub_delta * particles[velocity_x]
                 particles[y] = particles[y] + sub_delta * particles[velocity_y]
@@ -649,31 +733,23 @@ function SimulationHandler:_step(delta, batches)
         pre_solve(white_env)
         pre_solve(yolk_env)
 
-        -- convert particle position to spatial hash cell index
-        local position_to_cell_xy = function(position_x, position_y, cell_r)
-            local cell_x = math.floor(position_x / cell_r)
-            local cell_y = math.floor(position_y / cell_r)
+        -- convert particle position to spatial hash indices
+        local function position_to_cell_xy(position_x, position_y, cell_size)
+            local cell_x = math.floor(position_x / cell_size)
+            local cell_y = math.floor(position_y / cell_size)
             return cell_x, cell_y
         end
 
-        -- convert settings settings to XPBD compliance parameters
-        local function strength_to_compliance(strength)
-            local alpha = 1 - math.clamp(strength, 0, 1)
-            local alpha_per_substep = alpha / (sub_delta^2)
-            return alpha_per_substep
-        end
-
-        -- XBPD solver: position constraint
-        local enforce_position = function(ax, ay, a_inverse_mass, px, py, alpha)
-            local current_distance = math.distance(ax, ay, px, py)
-
+        -- XPBD: enforce distance to anchor to be 0
+        local function enforce_position(ax, ay, a_inverse_mass, px, py, alpha)
             if a_inverse_mass < math.eps then
                 return false
             end
 
+            local current_distance = math.distance(ax, ay, px, py)
             local dx, dy = math.normalize(px - ax, py - ay)
 
-            local constraint_violation = current_distance
+            local constraint_violation = current_distance -- target_distance = 0
             local correction = constraint_violation / (a_inverse_mass + alpha)
 
             local x_correction = dx * correction * a_inverse_mass
@@ -682,33 +758,34 @@ function SimulationHandler:_step(delta, batches)
             return true, x_correction, y_correction
         end
 
-        -- move all particles in the direction of the batches current target
-        local move_towards_target = function(env, current_settings)
+        -- make all particles move towards their target
+        local function move_towards_target(env)
+            if not should_apply_follow then return end
             local data = env.particles
-            local follow_compliance = strength_to_compliance(current_settings.follow_strength)
             for particle_i = 1, env.n_particles do
                 local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
                 local batch = self._batch_id_to_batch[data[batch_id]]
-                local target_x, target_y = batch.target_x, batch.target_y
+                if batch ~= nil then
+                    local target_x, target_y = batch.target_x, batch.target_y
+                    local should_apply, x_correction, y_correction = enforce_position(
+                        data[x], data[y], data[inverse_mass],
+                        target_x, target_y,
+                        follow_compliance
+                    )
 
-                local should_apply, x_correction, y_correction = enforce_position(
-                    data[x], data[y], data[inverse_mass],
-                    target_x, target_y,
-                    follow_compliance
-                )
-
-                if should_apply then
-                    data[x] = data[x] + x_correction
-                    data[y] = data[y] + y_correction
+                    if should_apply then
+                        data[x] = data[x] + x_correction
+                        data[y] = data[y] + y_correction
+                    end
                 end
             end
         end
 
-        move_towards_target(white_env, self._settings.egg_white)
-        move_towards_target(yolk_env, self._settings.egg_yolk)
+        move_towards_target(white_env)
+        move_towards_target(yolk_env)
 
-        -- add particle to the spatial hash
-        local rebuild_spatial_hash = function(env)
+        -- construct the spatial hash
+        local function rebuild_spatial_hash(env)
             for particle_i = 1, env.n_particles do
                 local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
 
@@ -731,27 +808,19 @@ function SimulationHandler:_step(delta, batches)
                 end
 
                 table.insert(row, particle_i)
-
-                local r = env.particles[radius]
-                env.min_x = math.min(env.min_x, env.particles[x] - r)
-                env.min_y = math.min(env.min_y, env.particles[y] - r)
-                env.max_x = math.max(env.max_x, env.particles[x] + r)
-                env.max_y = math.max(env.max_y, env.particles[y] + r)
             end
         end
 
         rebuild_spatial_hash(white_env)
         rebuild_spatial_hash(yolk_env)
 
-        -- XBPD solver: distance constraint
-        local enforce_distance = function(
+        -- XPBD: enforce distance between two particles to be a specific value
+        local function enforce_distance(
             ax, ay, bx, by,
             inverse_mass_a, inverse_mass_b,
             target_distance,
             alpha
         )
-            if true then return false end
-
             local dx = bx - ax
             local dy = by - ay
 
@@ -763,30 +832,29 @@ function SimulationHandler:_step(delta, batches)
             local mass_sum = inverse_mass_a + inverse_mass_b
             if mass_sum <= math.eps then return false end
 
-            -- apply correction with clamping to prevent overshooting
             local correction = -constraint_violation / (mass_sum + alpha)
 
             local max_correction = math.abs(constraint_violation)
             correction = math.clamp(correction, -max_correction, max_correction)
 
-            local a_correction_x = -1 * dx * correction * inverse_mass_a
-            local a_correction_y = -1 * dy * correction * inverse_mass_a
+            local a_correction_x = -dx * correction * inverse_mass_a
+            local a_correction_y = -dy * correction * inverse_mass_a
 
-            local b_correction_x =  1 * dx * correction * inverse_mass_b
-            local b_correction_y =  1 * dy * correction * inverse_mass_b
+            local b_correction_x =  dx * correction * inverse_mass_b
+            local b_correction_y =  dy * correction * inverse_mass_b
 
             return true, a_correction_x, a_correction_y, b_correction_x, b_correction_y
         end
 
-        -- check if collision between particles already happened
-        local particles_already_collided = function(env, a_i, b_i)
+        -- has this particle-particle interaction already happened
+        local function particles_already_collided(env, a_i, b_i)
             return a_i == b_i
                 or (env.collided[a_i] ~= nil and env.collided[a_i][b_i] == true)
                 or (env.collided[b_i] ~= nil and env.collided[b_i][a_i] == true)
         end
 
-        -- store that particles have collided
-        local notify_particles_collided = function(env, a_i, b_i)
+        -- store which particles interacted with which already
+        local function notify_particles_collided(env, a_i, b_i)
             local a_entry = env.collided[a_i]
             if a_entry == nil then
                 a_entry = {}
@@ -803,14 +871,11 @@ function SimulationHandler:_step(delta, batches)
             b_entry[a_i] = true
         end
 
-        local collide_particles = function(env, current_settings)
-            local collision_compliance = strength_to_compliance(current_settings.collision_strength)
-            local cohesion_compliance = strength_to_compliance(current_settings.cohesion_strength)
-
-            local overlap_fraction = math.max(current_settings.collision_strength, 0)
+        -- enforce particle-particle interactions
+        local function collide_particles(env)
             local data = env.particles
 
-            -- iterate all neighbors of all particles
+            -- iterate neighbors of all particles
             for self_i = 1, env.n_particles do
                 local self_x, self_y, self_z, self_velocity_x, self_velocity_y, self_previous_x, self_previous_y, self_radius, self_mass, self_inverse_mass, self_batch_id = _get_property_indices(self_i)
 
@@ -820,27 +885,31 @@ function SimulationHandler:_step(delta, batches)
                     env.spatial_hash_cell_radius
                 )
 
-                for y_offset = -1, 1 do
-                    local column = env.spatial_hash[cell_y + y_offset]
-                    if column == nil then goto continue end
+                for x_offset = -1, 1 do
+                    local column = env.spatial_hash[cell_x + x_offset]
+                    if column == nil then goto next_column end
 
-                    for x_offset = -1, 1 do
-                        local row = column[cell_x + x_offset]
-                        if row == nil then goto continue end
+                    for y_offset = -1, 1 do
+                        local row = column[cell_y + y_offset]
+                        if row == nil then goto next_row end
 
                         for _, other_i in ipairs(row) do
+                            if particles_already_collided(env, self_i, other_i) then
+                                goto next_pair
+                            end
+
                             local other_x, other_y, other_z, other_velocity_x, other_velocity_y, other_previous_x, other_previous_y, other_radius, other_mass, other_inverse_mass, other_batch_id = _get_property_indices(other_i)
-                            if particles_already_collided(env, self_i, other_i) then goto continue end
 
-                            -- min distance is distance where circles are just touching, +/- overlap
-                            local min_distance = overlap_fraction * (data[self_radius] + data[other_radius])
+                            -- minimum allowable distance between particles
+                            local min_distance = collision_overlap_fraction * (data[self_radius] + data[other_radius])
 
-                            -- collision
-                            if min_distance > math.eps and math.distance(
+                            if should_apply_collision
+                                and min_distance > math.eps
+                                and math.distance(
                                 data[self_x], data[self_y],
                                 data[other_x], data[other_y]
-                            ) <= min_distance then -- if particles are currently overlapping
-                                -- get collision correction
+                            ) <= min_distance
+                            then
                                 local should_apply, self_cx, self_cy, other_cx, other_cy = enforce_distance(
                                     data[self_x], data[self_y],
                                     data[other_x], data[other_y],
@@ -848,47 +917,57 @@ function SimulationHandler:_step(delta, batches)
                                     min_distance, collision_compliance
                                 )
 
-                                -- apply to position direction
-                                if should_apply == true then
-                                    data[self_x] = data[self_x] + self_cx
-                                    data[self_y] = data[self_y] + self_cy
-                                    data[other_x] = data[other_x] + other_cy
+                                if should_apply then
+                                    data[self_x]  = data[self_x]  + self_cx
+                                    data[self_y]  = data[self_y]  + self_cy
+                                    data[other_x] = data[other_x] + other_cx
                                     data[other_y] = data[other_y] + other_cy
                                 end
                             end
 
-                            -- cohesion
-                            if data[self_batch_id] == data[other_batch_id] then
-                                -- only particles in the same batch should adhere
+                            -- maximum distance in which particles considers adherence
+                            local interaction_distance = cohesion_interaction_distance_fraction * (data[self_radius] + data[other_radius])
+
+                            if should_apply_cohesion
+                                and data[self_batch_id] == data[other_batch_id]
+                                and math.distance(
+                                data[self_x], data[self_y],
+                                data[other_x], data[other_y]
+                            ) < interaction_distance
+                            then
                                 local should_apply, self_cx, self_cy, other_cx, other_cy = enforce_distance(
                                     data[self_x], data[self_y],
                                     data[other_x], data[other_y],
                                     data[self_inverse_mass], data[other_inverse_mass],
-                                    min_distance, cohesion_compliance
+                                    interaction_distance, cohesion_compliance
                                 )
 
-                                if should_apply == true then
-                                    data[self_x] = data[self_x] + self_cx
-                                    data[self_y] = data[self_y] + self_cy
-                                    data[other_x] = data[other_x] + other_cy
+                                if should_apply then
+                                    data[self_x]  = data[self_x]  + self_cx
+                                    data[self_y]  = data[self_y]  + self_cy
+                                    data[other_x] = data[other_x] + other_cx
                                     data[other_y] = data[other_y] + other_cy
                                 end
                             end
 
                             notify_particles_collided(env, self_i, other_i)
+
+                            ::next_pair::
                         end
+
+                        ::next_row::
                     end
 
-                    ::continue::
+                    ::next_column::
                 end
             end
         end
 
-        --collide_particles(white_env, self._settings.egg_white)
-        --collide_particles(yolk_env, self._settings.egg_yolk)
+        collide_particles(white_env)
+        collide_particles(yolk_env)
 
-        -- post solve
-        local post_solve = function(env)
+        -- update velocity from position change, compute centers
+        local function post_solve(env)
             local center_of_mass_x, center_of_mass_y = 0, 0
             local total_mass = 0
 
@@ -907,6 +986,12 @@ function SimulationHandler:_step(delta, batches)
                 center_of_mass_x = center_of_mass_x + particles[x] * particles[mass]
                 center_of_mass_y = center_of_mass_y + particles[y] * particles[mass]
                 total_mass = total_mass + particles[mass]
+
+                local r = particles[radius]
+                env.min_x = math.min(env.min_x, env.particles[x] - r)
+                env.min_y = math.min(env.min_y, env.particles[y] - r)
+                env.max_x = math.max(env.max_x, env.particles[x] + r)
+                env.max_y = math.max(env.max_y, env.particles[y] + r)
             end
 
             env.center_of_mass_x = center_of_mass_x / total_mass
@@ -917,8 +1002,7 @@ function SimulationHandler:_step(delta, batches)
 
         post_solve(white_env)
         post_solve(yolk_env)
-
-    end -- for i = 1, n_substeps
+    end -- for substeps
 
     -- after solver, resize render textures if necessary
     local resize_canvas_maybe = function(canvas, env)
@@ -927,12 +1011,18 @@ function SimulationHandler:_step(delta, batches)
             current_w, current_h = canvas:getDimensions()
         end
 
-        local padding = 2 * settings.particle_texture_padding -- sic, reuse
+        local max_radius = math.max(self._settings.egg_white.max_radius, self._settings.egg_yolk.max_radius)
+        local padding = 2 * settings.particle_texture_padding
+            + max_radius * debugger.get("texture_scale") -- TODO self._settings.texture_scale
+
         local new_w = env.max_x - env.min_x + 2 * padding
         local new_h = env.max_y - env.min_y + 2 * padding
 
         if new_w > current_w or new_h > current_h then
-            local new_canvas = love.graphics.newCanvas(new_w, new_h, {
+            local new_canvas = love.graphics.newCanvas(
+                math.max(new_w, current_w),
+                math.max(new_h, current_h),
+            {
                 msaa = settings.canvas_msaa,
                 format = settings.texture_format
             })
@@ -975,11 +1065,12 @@ function SimulationHandler:_draw(batches)
         local texture_w, texture_h = self._particle_texture:getDimensions()
         local padding = self._settings.particle_texture_padding
 
-        local draw_env = function(env, canvas)
+        local draw_env = function(env, canvas, color)
             local canvas_width, canvas_height = canvas:getDimensions()
 
             love.graphics.setCanvas(canvas)
             love.graphics.clear(0, 0, 0, 0)
+            love.graphics.setColor(1, 1, 1, 1)
 
             -- translate to canvas local space
             love.graphics.push()
@@ -988,12 +1079,15 @@ function SimulationHandler:_draw(batches)
                 -env.centroid_y + canvas_height / 2
             )
 
+            love.graphics.setBlendMode("alpha", "premultiplied")
+
             local particles = env.particles
+            local texture_scale = debugger.get("texture_scale") --TODO self._settings.texture_scale
             for particle_i = 1, env.n_particles do
                 local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
 
-                local scale_x = (2 * particles[radius]) / (texture_w - 2 * padding)
-                local scale_y = (2 * particles[radius]) / (texture_h - 2 * padding)
+                local scale_x = (2 * particles[radius]) / (texture_w - 2 * padding) * texture_scale
+                local scale_y = (2 * particles[radius]) / (texture_h - 2 * padding) * texture_scale
 
                 love.graphics.draw(self._particle_texture,
                     particles[x], particles[y],
@@ -1027,42 +1121,40 @@ function SimulationHandler:_draw(batches)
     love.graphics.setBlendMode("alpha", "premultiplied")
     love.graphics.setColor(1, 1, 1, 1)
 
-    local draw_canvas = function(canvas, env)
-        local canvas_width, canvas_height = canvas:getDimensions()
-        love.graphics.draw(canvas,
-            env.centroid_x - 0.5 * canvas_width,
-            env.centroid_y - 0.5 * canvas_height
-        )
+    local safe_send = function(shader, uniform, value)
+        local success, error_maybe = pcall(shader.send, shader, uniform, value)
+        if not success then
+            self:_error(false, "In SimulationHandler._draw: ", error_maybe)
+        end
     end
 
-    draw_canvas(self._egg_white_canvas, self._last_egg_white_env)
-    draw_canvas(self._egg_yolk_canvas, self._last_egg_yolk_env)
+    local composite_alpha = debugger.get("composite_alpha") -- TODO self._settings.composite_alpha
+    safe_send(self._threshold_shader, "threshold", debugger.get("threshold_shader_threshold")) -- TODO self._settings.threshold_shader_threshold)
+    safe_send(self._threshold_shader, "smoothness", debugger.get("threshold_shader_smoothness")) -- TODO self._settings.threshold_shader_smoothness)
+
+    local draw_canvas = function(canvas, env, color)
+        local canvas_width, canvas_height = canvas:getDimensions()
+        local canvas_x, canvas_y = env.centroid_x - 0.5 * canvas_width,
+            env.centroid_y - 0.5 * canvas_height
+
+        love.graphics.setBlendMode("alpha", "premultiplied")
+
+        -- premultiply color
+        local r, g, b, a = (unpack or table.unpack)(color)
+        r = r * a * composite_alpha
+        g = g * a * composite_alpha
+        b = b * a * composite_alpha
+        love.graphics.setColor(r, g, b, a)
+
+        love.graphics.setShader(self._threshold_shader)
+        love.graphics.draw(canvas, canvas_x, canvas_y)
+        love.graphics.setShader()
+    end
+
+    draw_canvas(self._egg_white_canvas, self._last_egg_white_env, self._settings.egg_white.color)
+    draw_canvas(self._egg_yolk_canvas, self._last_egg_yolk_env, self._settings.egg_yolk.color)
 
     love.graphics.pop()
-end
-
---- @brief [internal] helper for update/draw, collects batches and asserts type correctness
-function SimulationHandler:_collect_batches(batches)
-    if batches == nil then
-        -- if unspecified, use all batches
-        local collected = {}
-        for _, batch in pairs(self._batch_id_to_batch) do
-            table.insert(collected, batch)
-        end
-        return collected
-    else
-        local collected = {}
-        for _, batch_id in pairs(batches) do
-            local batch = self._batch_id_to_batch[batch_id]
-            if batch == nil then
-                self:_error(false, "In SimulationHandler.update: no batch width id `", batch_id, "`, this id will be ignored")
-            else
-                table.insert(collected, batch)
-            end
-        end
-
-        return collected
-    end
 end
 
 --- @brief [internal] throw error with pretty printing
@@ -1093,7 +1185,7 @@ function SimulationHandler:_error(is_fatal, ...)
         table.insert(message, arg)
     end
 
-    message = table.concat(message, " ")
+    message = table.concat(message, " ") .. "\n"
 
     -- write to error stream and flush and print to console immediately
     if is_fatal then
