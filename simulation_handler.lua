@@ -39,9 +39,9 @@ local default_settings = {
 
     -- particle configs for egg yolk
     egg_yolk = {
-        particle_density = 1 / 256,
+        particle_density = 1 / 128,
         min_radius = 4,
-        max_radius = 7,
+        max_radius = 4,
         min_mass = 1,
         max_mass = 1.5,
         damping = 0.5,
@@ -129,10 +129,10 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius)
     )
 
     local white_area = math.pi * white_radius^2 -- area of a circle = pi * r^2
-    local white_n_particles = math.ceil(white_settings.particle_density * white_area)
+    local white_n_particles = math.max(5, math.ceil(white_settings.particle_density * white_area))
 
     local yolk_area = math.pi * yolk_radius^2
-    local yolk_n_particles = math.ceil(yolk_settings.particle_density * yolk_area)
+    local yolk_n_particles = math.max(3, math.ceil(yolk_settings.particle_density * yolk_area))
 
     local batch_id, batch = self:_new_batch(
         x, y,
@@ -332,6 +332,8 @@ function SimulationHandler:_reinitialize()
 
     self._yolk_data = {}
     self._total_n_yolk_particles = 0
+
+    self._max_radius = 1
 
     self._canvases_need_update = false
     self._elapsed = 0
@@ -579,6 +581,8 @@ function SimulationHandler:_new_batch(
         array[n + _inverse_mass_offset] = 1 / mass
         array[n + _batch_id] = batch_id
 
+        self._max_radius = math.max(self._max_radius, radius)
+
         return n
     end
 
@@ -697,7 +701,7 @@ function SimulationHandler:_step(delta)
         local spatial_hash_cell_radius = math.max(
             current_settings.collision_overlap_factor,
             current_settings.cohesion_interaction_distance_factor
-        ) * 2 * current_settings.max_radius
+        ) * 2 * self._max_radius
 
         if old_env_maybe == nil then
             return {
@@ -1035,7 +1039,7 @@ function SimulationHandler:_step(delta)
         end
 
         collide_particles(white_env)
-        --collide_particles(yolk_env)
+        collide_particles(yolk_env)
 
         -- update velocity from position change, compute centers
         local function post_solve(env)
@@ -1059,10 +1063,10 @@ function SimulationHandler:_step(delta)
                 total_mass = total_mass + particles[mass]
 
                 local r = particles[radius]
-                env.min_x = math.min(env.min_x, env.particles[x] - r)
-                env.min_y = math.min(env.min_y, env.particles[y] - r)
-                env.max_x = math.max(env.max_x, env.particles[x] + r)
-                env.max_y = math.max(env.max_y, env.particles[y] + r)
+                env.min_x = math.min(env.min_x, particles[x] - r)
+                env.min_y = math.min(env.min_y, particles[y] - r)
+                env.max_x = math.max(env.max_x, particles[x] + r)
+                env.max_y = math.max(env.max_y, particles[y] + r)
             end
 
             env.center_of_mass_x = center_of_mass_x / total_mass
@@ -1218,7 +1222,7 @@ function SimulationHandler:_draw(batches)
         b = b * a * composite_alpha
         love.graphics.setColor(r, g, b, a)
 
-        -- TODO love.graphics.setShader(self._threshold_shader)
+        love.graphics.setShader(self._threshold_shader)
         love.graphics.draw(canvas, canvas_x, canvas_y)
         love.graphics.setShader()
     end
