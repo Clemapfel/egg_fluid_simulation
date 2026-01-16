@@ -710,6 +710,7 @@ function SimulationHandler:_step(delta)
 
                 spatial_hash = {}, -- Table<Table<particle_index>>
                 spatial_hash_cell_radius = spatial_hash_cell_radius, -- px
+                particle_i_to_cell_hash = {},
 
                 damping = debugger.get("damping"), -- TODO current_settings.damping,
 
@@ -729,7 +730,6 @@ function SimulationHandler:_step(delta)
         else
             -- if old env present, keep allocated to keep gc / allocation pressure low
             local env = old_env_maybe
-
             for _, column in pairs(env.spatial_hash) do
                 for _, row in pairs(column) do
                     table.clear(row)
@@ -741,6 +741,8 @@ function SimulationHandler:_step(delta)
             for _, entry in pairs(env.collided) do
                 table.clear(entry)
             end
+
+            table.clear(env.particle_i_to_cell_hash)
 
             env.min_x = math.huge
             env.min_y = math.huge
@@ -839,6 +841,20 @@ function SimulationHandler:_step(delta)
         move_towards_target(white_env)
         move_towards_target(yolk_env)
 
+        -- Szudzik's pairing function for spatial hash
+        local function cell_key(cell_x, cell_y)
+            local a, b = cell_x, cell_y
+            if a >= 0 and b >= 0 then
+                return a >= b and a * a + a + b or b * b + a
+            elseif a < 0 and b >= 0 then
+                return 2 * b * b + b + a
+            elseif a >= 0 and b < 0 then
+                return -2 * a * a - a + b
+            else
+                return -2 * (a * a + b * b) - a - b - 1
+            end
+        end
+
         -- construct the spatial hash
         local function rebuild_spatial_hash(env)
             for particle_i = 1, env.n_particles do
@@ -850,19 +866,7 @@ function SimulationHandler:_step(delta)
                     env.spatial_hash_cell_radius
                 )
 
-                local column = env.spatial_hash[cell_x]
-                if column == nil then
-                    column = {}
-                    env.spatial_hash[cell_x] = column
-                end
-
-                local row = column[cell_y]
-                if row == nil then
-                    row = {}
-                    column[cell_y] = row
-                end
-
-                table.insert(row, particle_i)
+                TODO: cell_x, cell_y as particle property
             end
         end
 
