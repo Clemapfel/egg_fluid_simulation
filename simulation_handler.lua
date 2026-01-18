@@ -83,26 +83,44 @@ local default_settings = {
             available_formats = love.graphics.getCanvasFormats()
         end
 
-        local texture_format = "rgba8"
-        --[[ TODO
+        local texture_format = nil
         for _, format in ipairs({
             "r32f",
             "r16f",
             "rg32f",
             "rg16f",
             "rgba32f",
-            "rgba16f"
+            "rgba16f",
+            "r8",
+            "rg8",
+            "rgba8"
         }) do
             if available_formats[format] == true then
                 texture_format = format
                 break
             end
         end
-        ]]
 
         return texture_format
     end)()
 }
+
+local make_proxy = function(t)
+    return setmetatable({}, {
+        __index = function(self, key)
+            local out = debugger.get(key)
+            if out ~= nil then
+                return out
+            else
+                return rawget(t, key)
+            end
+        end
+    })
+end
+
+default_settings.egg_white = make_proxy(default_settings.egg_white)
+default_settings.egg_yolk = make_proxy(default_settings.egg_yolk)
+
 
 --- @brief add a new batch to the simulation
 --- @overload fun(self: egg.SimulationHandler, x: number, y: number)
@@ -264,7 +282,7 @@ function SimulationHandler:update(delta, batches)
 
     -- accumulate delta time, run sim at fixed framerate for better stability
     self._elapsed = self._elapsed + delta
-    local step = debugger.get("step_delta") -- TODO settings.step_delta
+    local step = settings.step_delta
     local n_steps = 0
     while self._elapsed >= step do
         self:_step(step)
@@ -283,39 +301,12 @@ end
 
 --- @brief [internal] allocate a new instance
 --- @param settings table? override settings
-function SimulationHandler._new(settings) -- sic, no :, self is returned instance, not type
-    if settings == nil then settings = default_settings end
-
+function SimulationHandler._new() -- sic, no :, self is returned instance, not type
     local self = setmetatable({}, {
         __index = SimulationHandler
     })
 
-    if settings ~= default_settings then
-        -- iterate through all keys in default settings, and assign new settings unless it already exists
-        -- this way, the argument settings do not need to specify all parameters
-
-        local seen = {}
-        local function apply_default_settings(new_settings, defaults)
-            for key, default_value in pairs(defaults) do
-                if new_settings[key] == nil then
-                    if type(default_value) == "table" then
-                        new_settings[key] = {}
-                        apply_default_settings(new_settings[key], default_value)
-                    else
-                        new_settings[key] = default_value
-                    end
-                elseif type(new_settings[key]) == "table" and type(default_value) == "table" then
-                    apply_default_settings(new_settings[key], default_value)
-                end
-            end
-
-            return new_settings
-        end
-
-        settings = apply_default_settings(settings, default_settings)
-    end
-
-    self._settings = settings
+    self._settings = default_settings
     self:_reinitialize()
 
     return self
@@ -462,9 +453,11 @@ local _previous_y_offset = 6 -- last steps y position, px
 local _radius_offset = 7 -- radius, px
 local _mass_offset = 8 -- mass, fraction
 local _inverse_mass_offset = 9 -- 1 / mass, precomputed for performance
-local _batch_id = 10
+local _cell_x_offset = 10
+local _cell_y_offset = 11
+local _batch_id_offset = 12
 
-local _stride = _batch_id + 1
+local _stride = _batch_id_offset + 1
 
 -- compute property indices for environment particle array
 local _get_property_indices = function(particle_i)
@@ -480,12 +473,15 @@ local _get_property_indices = function(particle_i)
     local radius = base + _radius_offset
     local mass = base + _mass_offset
     local inverse_mass = base + _inverse_mass_offset
-    local batch_i = base + _batch_id
+    local batch_i = base + _batch_id_offset
+    local hash_cell_x = base + _cell_x_offset
+    local hash_cell_y = base + _cell_y_offset
 
     return x, y, z,
         velocity_x, velocity_y,
         previous_x, previous_y,
         radius, mass, inverse_mass,
+        hash_cell_x, hash_cell_y,
         batch_i
 end
 
@@ -579,7 +575,9 @@ function SimulationHandler:_new_batch(
         array[n + _radius_offset] = radius
         array[n + _mass_offset] = mass
         array[n + _inverse_mass_offset] = 1 / mass
-        array[n + _batch_id] = batch_id
+        array[n + _batch_id_offset] = batch_id
+        array[n + _cell_x_offset] = -math.huge
+        array[n + _cell_y_offset] = -math.huge
 
         self._max_radius = math.max(self._max_radius, radius)
 
@@ -682,11 +680,80 @@ function SimulationHandler:_remove(white_indices, yolk_indices)
     remove_particles(yolk_indices,  self._yolk_data,  "yolk_particle_indices")
 end
 
+-- spatial hash index to single hash value
+--[[
+if require("bit") == nil then
+    -- Szudzik's pairing function
+    _cell_xy_to_hash = function(x, y)
+        local a = x >= 0 and (x * 2) or (-x * 2 - 1)
+        local b = y >= 0 and (y * 2) or (-y * 2 - 1)
+
+        if a >= b then
+            return a * a + a + b
+        else
+            return b * b + a
+        end
+    end
+
+    _hash_to_cell_xy = function(z)
+        local s = math.floor(math.sqrt(z))
+        local t = z - s * s
+
+        local a, b
+        if t < s then
+            a, b = t, s
+        else
+            a, b = s, t - s
+        end
+
+        local x = (a % 2 == 0)
+            and math.floor(a * 0.5)
+            or -math.floor((a + 1) * 0.5)
+
+        local y = (b % 2 == 0)
+            and math.floor(b * 0.5)
+            or -math.floor((b + 1) * 0.5)
+
+        return x, y
+    end
+else
+    -- branchless version using bit operations
+    local bit = require "bit"
+    _cell_xy_to_hash = function(x, y)
+        local a = bit.bxor(bit.lshift(x, 1), bit.rshift(x, 31))
+        local b = bit.bxor(bit.lshift(y, 1), bit.rshift(y, 31))
+
+        if a >= b then
+            return a * a + a + b
+        else
+            return b * b + a
+        end
+    end
+
+    _hash_to_cell_xy = function(hash)
+        local s = math.floor(math.sqrt(hash))
+        local t = hash - s * s
+
+        local a, b
+        if t < s then
+            a, b = t, s
+        else
+            a, b = s, t - s
+        end
+
+        local x = bit.bxor(bit.rshift(a, 1), -1 * bit.band(a, 1))
+        local y = bit.bxor(bit.rshift(b, 1), -1 * bit.band(b, 1))
+
+        return x, y
+    end
+end
+]]--
+
 --- @brief [internal] perform a full step of the simulation, includes substeps
 function SimulationHandler:_step(delta)
     local settings = self._settings
 
-    local n_sub_steps = debugger.get("n_sub_steps")-- TODO settings.n_sub_steps
+    local n_sub_steps = settings.n_sub_steps
     local sub_delta = delta / n_sub_steps
 
     -- convert settings settings to XPBD compliance parameters
@@ -697,22 +764,21 @@ function SimulationHandler:_step(delta)
     end
 
     -- setup environments for yolks and white separately
-    local create_environment = function(current_settings, old_env_maybe)
+    local create_environment = function(env_settings, old_env_maybe)
         local spatial_hash_cell_radius = math.max(
-            current_settings.collision_overlap_factor,
-            current_settings.cohesion_interaction_distance_factor
+            env_settings.collision_overlap_factor,
+            env_settings.cohesion_interaction_distance_factor
         ) * 2 * self._max_radius
 
         if old_env_maybe == nil then
             return {
                 particles = {}, -- Table<Number>, particles inline
-                collided = {}, -- Table<ParticleIndex, Set<ParticleIndex>>
-
+                collided = {}, -- Set<Hash>
                 spatial_hash = {}, -- Table<Table<particle_index>>
                 spatial_hash_cell_radius = spatial_hash_cell_radius, -- px
                 particle_i_to_cell_hash = {},
 
-                damping = debugger.get("damping"), -- TODO current_settings.damping,
+                damping = env_settings.damping,
 
                 min_x = math.huge, -- particle position bounds, px
                 min_y = math.huge,
@@ -725,31 +791,20 @@ function SimulationHandler:_step(delta)
                 center_of_mass_y = 0,
                 centroid_x = 0,
                 centroid_y = 0,
-                settings = current_settings
+                settings = env_settings
             }
         else
             -- if old env present, keep allocated to keep gc / allocation pressure low
             local env = old_env_maybe
-            for _, column in pairs(env.spatial_hash) do
-                for _, row in pairs(column) do
-                    table.clear(row)
-                end
-                -- do not clear column
-            end
-
-            -- reset collision record
-            for _, entry in pairs(env.collided) do
-                table.clear(entry)
-            end
-
-            table.clear(env.particle_i_to_cell_hash)
+            table.clear(env.spatial_hash)
+            table.clear(env.collided)
 
             env.min_x = math.huge
             env.min_y = math.huge
             env.max_x = -math.huge
             env.max_y = -math.huge
             env.spatial_hash_cell_radius = spatial_hash_cell_radius
-            env.settings = current_settings
+            env.settings = env_settings
 
             return env
         end
@@ -770,7 +825,7 @@ function SimulationHandler:_step(delta)
             local damping = env.damping
             local particles = env.particles
             for particle_i = 1, env.n_particles do
-                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
+                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, hash_cell_x, hash_cell_y, batch_id = _get_property_indices(particle_i)
 
                 particles[previous_x] = particles[x]
                 particles[previous_y] = particles[y]
@@ -820,7 +875,7 @@ function SimulationHandler:_step(delta)
 
             local data = env.particles
             for particle_i = 1, env.n_particles do
-                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
+                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, hash_cell_x, hash_cell_y, batch_id = _get_property_indices(particle_i)
                 local batch = self._batch_id_to_batch[data[batch_id]]
                 if batch ~= nil then
                     local target_x, target_y = batch.target_x, batch.target_y
@@ -858,7 +913,7 @@ function SimulationHandler:_step(delta)
         -- construct the spatial hash
         local function rebuild_spatial_hash(env)
             for particle_i = 1, env.n_particles do
-                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
+                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, hash_cell_x, hash_cell_y, batch_id = _get_property_indices(particle_i)
 
                 local cell_x, cell_y = position_to_cell_xy(
                     env.particles[x],
@@ -866,7 +921,17 @@ function SimulationHandler:_step(delta)
                     env.spatial_hash_cell_radius
                 )
 
-                TODO: cell_x, cell_y as particle property
+                local hash = _cell_xy_to_hash(cell_x, cell_y)
+                local entry = env.spatial_hash[hash]
+                if entry == nil then
+                    entry = {}
+                    env.spatial_hash[hash] = entry
+                end
+
+                env.particles[hash_cell_x] = cell_x
+                env.particles[hash_cell_y] = cell_y
+
+                table.insert(entry, particle_i)
             end
         end
 
@@ -948,28 +1013,22 @@ function SimulationHandler:_step(delta)
 
             -- iterate neighbors of all particles
             for self_i = 1, env.n_particles do
-                local self_x, self_y, self_z, self_velocity_x, self_velocity_y, self_previous_x, self_previous_y, self_radius, self_mass, self_inverse_mass, self_batch_id = _get_property_indices(self_i)
+                local self_x, self_y, self_z, self_velocity_x, self_velocity_y, self_previous_x, self_previous_y, self_radius, self_mass, self_inverse_mass, self_hash_cell_x, self_hash_cell_y, self_batch_id = _get_property_indices(self_i)
 
-                local cell_x, cell_y = position_to_cell_xy(
-                    data[self_x],
-                    data[self_y],
-                    env.spatial_hash_cell_radius
-                )
+                local cell_x, cell_y = data[self_hash_cell_x], data[self_hash_cell_y]
 
                 for x_offset = -1, 1 do
-                    local column = env.spatial_hash[cell_x + x_offset]
-                    if column == nil then goto next_column end
-
                     for y_offset = -1, 1 do
-                        local row = column[cell_y + y_offset]
-                        if row == nil then goto next_row end
+                        local hash = _cell_xy_to_hash(cell_x + x_offset, cell_y + y_offset)
+                        local entry = env.spatial_hash[hash]
+                        if entry == nil then goto next_index end
 
-                        for _, other_i in ipairs(row) do
+                        for _, other_i in ipairs(entry) do
                             if particles_already_collided(env, self_i, other_i) then
                                 goto next_pair
                             end
 
-                            local other_x, other_y, other_z, other_velocity_x, other_velocity_y, other_previous_x, other_previous_y, other_radius, other_mass, other_inverse_mass, other_batch_id = _get_property_indices(other_i)
+                            local other_x, other_y, other_z, other_velocity_x, other_velocity_y, other_previous_x, other_previous_y, other_radius, other_mass, other_inverse_mass, other_hash_cell_x, other_hash_cell_y, other_batch_id = _get_property_indices(other_i)
 
                             -- minimum allowable distance between particles
                             local min_distance = collision_overlap_factor * (data[self_radius] + data[other_radius])
@@ -1034,10 +1093,8 @@ function SimulationHandler:_step(delta)
                             ::next_pair::
                         end
 
-                        ::next_row::
+                        ::next_index::
                     end
-
-                    ::next_column::
                 end
             end
         end
@@ -1054,7 +1111,7 @@ function SimulationHandler:_step(delta)
 
             local particles = env.particles
             for particle_i = 1, env.n_particles do
-                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
+                local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, hash_cell_x, hash_cell_y, batch_id = _get_property_indices(particle_i)
 
                 particles[velocity_x] = (particles[x] - particles[previous_x]) / sub_delta
                 particles[velocity_y] = (particles[y] - particles[previous_y]) / sub_delta
@@ -1126,6 +1183,518 @@ function SimulationHandler:_step(delta)
     self._canvases_need_update = true
 end
 
+-- ### STEP HELPERS ### --
+do
+    --- convert particle index to index in shared particle property array
+    local _particle_i_to_data_offset = function(particle_i)
+        return (particle_i - 1) * _stride + 1 -- 1-based
+    end
+
+    --- convert settings settings to XPBD compliance parameters
+    local function _strength_to_compliance(strength, sub_step_delta)
+        local alpha = 1 - math.clamp(strength, 0, 1)
+        local alpha_per_substep = alpha / (sub_step_delta^2)
+        return alpha_per_substep
+    end
+
+    --- setup environments for yolks and white separately
+    local _create_environment = function(current_env)
+        if current_env == nil then
+            -- create new environment
+            return {
+                particles = {}, -- Table<Number>, particles inline
+                collided = {}, -- Table<ParticleIndex, Set<ParticleIndex>>
+
+                spatial_hash = {}, -- Table<Table<particle_index>>
+                batch_id_to_follow_x = {},
+                batch_id_to_follow_y = {},
+
+                damping = 1,
+
+                min_x = math.huge, -- particle position bounds, px
+                min_y = math.huge,
+                max_x = -math.huge,
+                max_y = -math.huge,
+
+                n_particles = 0,
+
+                center_of_mass_x = 0, -- set in post-solve, px
+                center_of_mass_y = 0,
+                centroid_x = 0,
+                centroid_y = 0,
+            }
+        else
+            -- if old env present, keep allocated to keep gc / allocation pressure low
+            local env = current_env
+
+            -- reset tables
+            table.clear(env.spatial_hash)
+            table.clear(env.collided)
+            table.clear(env.batch_id_to_follow_x)
+            table.clear(env.batch_id_to_follow_y)
+
+            -- reset variables
+            env.min_x = math.huge
+            env.min_y = math.huge
+            env.max_x = -math.huge
+            env.max_y = -math.huge
+            return env
+        end
+    end
+
+    --- pre solve: integrate velocity and update last position
+    local _pre_solve = function(particles, n_particles, damping, delta)
+        for particle_i = 1, n_particles do
+            local i = _particle_i_to_data_offset(particle_i)
+            local x_i = i + _x_offset
+            local y_i = i + _y_offset
+            local previous_x_i = i + _previous_x_offset
+            local previous_y_i = i + _previous_y_offset
+            local velocity_x_i = i + _velocity_x_offset
+            local velocity_y_i = i + _velocity_y_offset
+
+            local x, y = particles[x_i], particles[y_i]
+
+            particles[previous_x_i] = x
+            particles[previous_y_i] = y
+
+            local velocity_x = particles[velocity_x_i] * damping
+            local velocity_y = particles[velocity_y_i] * damping
+
+            particles[velocity_x_i] = velocity_x
+            particles[velocity_y_i] = velocity_y
+
+            particles[x_i] = x + delta * velocity_x
+            particles[y_i] = y + delta * velocity_y
+        end
+    end
+
+    --- make particles move towards target
+    local _solve_follow_constraint = function(
+        particles, n_particles,
+        compliance,
+        batch_id_to_follow_x, batch_id_to_follow_y
+    )
+        for particle_i = 1, n_particles do
+            local i = _particle_i_to_data_offset(particle_i)
+            local x_i = i + _x_offset
+            local y_i = i + _y_offset
+            local inverse_mass_i = i + _inverse_mass_offset
+            local batch_id_i = i + _batch_id_offset
+
+            local batch_id = particles[batch_id_i]
+            local follow_x = batch_id_to_follow_x[batch_id]
+            local follow_y = batch_id_to_follow_y[batch_id]
+
+            -- XPBD: enforce distance to anchor to be 0
+            local inverse_mass = particles[inverse_mass_i]
+            if inverse_mass > math.eps then
+                local x, y = particles[x_i], particles[y_i]
+                local current_distance = math.distance(x, y, follow_x, follow_y)
+                local dx, dy = math.normalize(follow_x - x, follow_y - y)
+
+                local constraint_violation = current_distance -- target_distance = 0
+                local correction = constraint_violation / (inverse_mass + compliance)
+
+                local x_correction = dx * correction * inverse_mass
+                local y_correction = dy * correction * inverse_mass
+
+                particles[x_i] = particles[x_i] + x_correction
+                particles[y_i] = particles[y_i] + y_correction
+            end
+        end
+    end
+
+    --- szudzik's pairing function, converts x, y integer index to hash
+    local _xy_to_hash = function(x, y)
+        local a = x >= 0 and (x * 2) or (-x * 2 - 1)
+        local b = y >= 0 and (y * 2) or (-y * 2 - 1)
+
+        if a >= b then
+            return a * a + a + b
+        else
+            return b * b + a
+        end
+    end
+
+    --- repopulate spatial hash for later positional queries
+    local _rebuild_spatial_hash = function(particles, n_particles, spatial_hash, spatial_hash_cell_radius)
+        for particle_i = 1, n_particles do
+            local i = _particle_i_to_data_offset(particle_i)
+            local x = i + _x_offset
+            local y = i + _y_offset
+            local hash_cell_x = i + _cell_x_offset
+            local hash_cell_y = i + _cell_y_offset
+
+            local cell_x = math.floor(particles[x] / spatial_hash_cell_radius)
+            local cell_y = math.floor(particles[y] / spatial_hash_cell_radius)
+
+            -- store in particle data for later access
+            particles[hash_cell_x] = cell_x
+            particles[hash_cell_y] = cell_y
+
+            -- convert to hash, then store in that cell
+            local hash = _xy_to_hash(cell_x, cell_y)
+            local entry = spatial_hash[hash]
+            if entry == nil then
+                entry = {}
+                spatial_hash[hash] = entry
+            end
+
+            table.insert(entry, particle_i)
+        end
+    end
+
+    -- XPBD: enforce distance between two particles to be a specific value
+    local function _enforce_distance(
+        ax, ay, bx, by,
+        inverse_mass_a, inverse_mass_b,
+        target_distance,
+        compliance
+    )
+        local dx = bx - ax
+        local dy = by - ay
+
+        local current_distance = math.magnitude(dx, dy)
+        dx, dy = math.normalize(dx, dy)
+
+        local constraint_violation = current_distance - target_distance
+
+        local mass_sum = inverse_mass_a + inverse_mass_b
+
+        local correction = -constraint_violation / (mass_sum + compliance)
+
+        local max_correction = math.abs(constraint_violation)
+        correction = math.clamp(correction, -max_correction, max_correction)
+
+        local a_correction_x = -dx * correction * inverse_mass_a
+        local a_correction_y = -dy * correction * inverse_mass_a
+
+        local b_correction_x =  dx * correction * inverse_mass_b
+        local b_correction_y =  dy * correction * inverse_mass_b
+
+        return a_correction_x, a_correction_y, b_correction_x, b_correction_y
+    end
+
+    --- enforce collision and cohesion
+    local function _solve_collision(
+        particles, n_particles,
+        spatial_hash, collided,
+        collision_overlap_factor, collision_compliance,
+        cohesion_interaction_distance_factor, cohesion_compliance
+    )
+        for self_particle_i = 1, n_particles do
+            local self_i = _particle_i_to_data_offset(self_particle_i)
+            local self_x_i = self_i + _x_offset
+            local self_y_i = self_i + _y_offset
+
+            local self_inverse_mass = particles[self_i + _inverse_mass_offset]
+            local self_radius = particles[self_i + _radius_offset]
+            local self_batch_id = particles[self_i + _batch_id_offset]
+
+            local self_hash_cell_x_i = self_i + _cell_x_offset
+            local self_hash_cell_y_i = self_i + _cell_y_offset
+
+            local cell_x = particles[self_hash_cell_x_i]
+            local cell_y = particles[self_hash_cell_y_i]
+
+            for x_offset = -1, 1 do
+                for y_offset = -1, 1 do
+                    local spatial_hash_hash = _xy_to_hash(
+                        cell_x + x_offset,
+                        cell_y + y_offset
+                    )
+
+                    local entry = spatial_hash[spatial_hash_hash]
+                    if entry == nil then goto next_index end
+
+                    for _, other_particle_i in ipairs(entry) do
+                        -- avoid collision with self
+                        if self_particle_i == other_particle_i then goto next_pair end
+
+                        -- only collide each unique pair once
+                        local pair_hash = _xy_to_hash(
+                            math.min(self_particle_i, other_particle_i),
+                            math.max(self_particle_i, other_particle_i)
+                        )
+
+                        if collided[pair_hash] == true then goto next_pair end
+                        collided[pair_hash] = true
+
+                        local other_i = _particle_i_to_data_offset(other_particle_i)
+                        local other_x_i = other_i + _x_offset
+                        local other_y_i = other_i + _y_offset
+
+                        local other_inverse_mass = particles[other_i + _inverse_mass_offset]
+                        local other_radius = particles[other_i + _radius_offset]
+                        local other_batch_id = particles[other_i + _batch_id_offset]
+
+                        -- degenerate particle data
+                        if self_inverse_mass + other_inverse_mass < math.eps then goto next_pair end
+
+                        do -- collision: enforce distance between particles to be larger than minimum
+                            local min_distance = collision_overlap_factor * (self_radius + other_radius)
+
+                            local self_x, self_y, other_x, other_y =
+                                particles[self_x_i],  particles[self_y_i],
+                                particles[other_x_i],  particles[other_y_i]
+
+                            local distance = math.distance(self_x, self_y, other_x, other_y)
+                            if distance <= min_distance then
+                                local self_correction_x, self_correction_y,
+                                other_correction_x, other_correction_y = _enforce_distance(
+                                    self_x, self_y, other_x, other_y,
+                                    self_inverse_mass, other_inverse_mass,
+                                    min_distance, collision_compliance
+                                )
+
+                                particles[self_x_i] = self_x + self_correction_x
+                                particles[self_y_i] = self_y + self_correction_y
+                                particles[other_x_i] = other_x + other_correction_x
+                                particles[other_y_i] = other_y + other_correction_y
+                            end
+                        end
+
+                        do -- cohesion: move particles in the same batch towards each other
+                            local interaction_distance = cohesion_interaction_distance_factor * (self_radius + other_radius)
+
+                            local self_x, self_y, other_x, other_y =
+                                particles[self_x_i],  particles[self_y_i],
+                                particles[other_x_i],  particles[other_y_i]
+
+                            if self_batch_id == other_batch_id
+                                and math.distance(self_x, self_y, other_x, other_y) <= interaction_distance
+                            then
+                                local self_correction_x, self_correction_y,
+                                other_correction_x, other_correction_y = _enforce_distance(
+                                    self_x, self_y, other_x, other_y,
+                                    self_inverse_mass, other_inverse_mass,
+                                    interaction_distance, cohesion_compliance
+                                )
+
+                                particles[self_x_i] = self_x + self_correction_x
+                                particles[self_y_i] = self_y + self_correction_y
+                                particles[other_x_i] = other_x + other_correction_x
+                                particles[other_y_i] = other_y + other_correction_y
+                            end
+                        end
+                        ::next_pair::
+                    end -- other_particle_i
+
+                    ::next_index::
+                end -- y_offset
+            end -- x_offset
+        end
+
+    end
+
+    --- post solve: update true velocity from XPBD correction
+    local function _post_solve(particles, n_particles, delta)
+        local min_x, min_y = math.huge, math.huge
+        local max_x, max_y = -math.huge, -math.huge
+        local centroid_x, centroid_y = 0, 0
+
+        for particle_i = 1, n_particles do
+            local i = _particle_i_to_data_offset(particle_i)
+            local x_i = i + _x_offset
+            local y_i = i + _y_offset
+            local previous_x_i = i + _previous_x_offset
+            local previous_y_i = i + _previous_y_offset
+            local velocity_x_i = i + _velocity_x_offset
+            local velocity_y_i = i + _velocity_y_offset
+            local mass_i = i + _mass_offset
+            local radius_i = i + _radius_offset
+
+            local x = particles[x_i]
+            local y = particles[y_i]
+
+            -- update velocity from displacement
+            particles[velocity_x_i] = (x - particles[previous_x_i]) / delta
+            particles[velocity_y_i] = (y - particles[previous_y_i]) / delta
+
+            centroid_x = centroid_x + x
+            centroid_y = centroid_y + y
+
+            -- log AABB
+            local r = particles[radius_i]
+            min_x = math.min(min_x, x - r)
+            min_y = math.min(min_y, y - r)
+            max_x = math.max(max_x, x + r)
+            max_y = math.max(max_y, y + r)
+        end
+
+        -- centroid is arithmetic mean of all particle positions
+        centroid_x = centroid_x / n_particles
+        centroid_y = centroid_y / n_particles
+
+        return min_x, min_y, max_x, max_y, centroid_x, centroid_y
+    end
+
+    --- @brief [internal]
+    function SimulationHandler:_step(delta)
+        local settings = self._settings
+
+        local n_sub_steps = settings.n_sub_steps
+        local sub_delta = delta / n_sub_steps
+
+        local white_settings = self._settings.egg_white
+        local yolk_settings = self._settings.egg_yolk
+
+        -- setup environments for yolk / white separately
+        local update_environment = function(old_env, settings)
+            local env = _create_environment(self._last_egg_white_env)
+            env.particles = self._white_data
+            env.n_particles = self._total_n_white_particles
+
+            -- compute spatial hash cell radius
+            env.spatial_hash_cell_radius = math.max(
+                settings.collision_overlap_factor,
+                settings.cohesion_interaction_distance_factor
+            ) * 2 * self._max_radius
+
+            -- precompute batch id to follow position for faster access
+            for batch_id, batch in pairs(self._batch_id_to_batch) do
+                env.batch_id_to_follow_x[batch_id] = batch.target_x
+                env.batch_id_to_follow_y[batch_id] = batch.target_y
+            end
+
+            env.damping = settings.damping
+            env.follow_compliance = _strength_to_compliance(settings.follow_strength, sub_delta)
+            env.collision_compliance = _strength_to_compliance(settings.collision_strength, sub_delta)
+            env.cohesion_compliance = _strength_to_compliance(settings.cohesion_strength, sub_delta)
+            return env
+        end
+
+        local white_env = update_environment(self._last_egg_white_env, white_settings)
+        local yolk_env = update_environment(self._last_egg_yolk_env, yolk_settings)
+
+        for sub_step_i = 1, n_sub_steps do
+            _pre_solve(
+                white_env.particles,
+                white_env.n_particles,
+                white_env.damping,
+                sub_delta
+            )
+
+            _pre_solve(
+                yolk_env.particles,
+                yolk_env.n_particles,
+                yolk_env.damping,
+                sub_delta
+            )
+
+            _solve_follow_constraint(
+                white_env.particles,
+                white_env.n_particles,
+                white_env.follow_compliance,
+                white_env.batch_id_to_follow_x,
+                white_env.batch_id_to_follow_y
+            )
+
+            _solve_follow_constraint(
+                yolk_env.particles,
+                yolk_env.n_particles,
+                yolk_env.follow_compliance,
+                yolk_env.batch_id_to_follow_x,
+                yolk_env.batch_id_to_follow_y
+            )
+
+            _rebuild_spatial_hash(
+                white_env.particles,
+                white_env.n_particles,
+                white_env.spatial_hash,
+                white_env.spatial_hash_cell_radius
+            )
+
+            _rebuild_spatial_hash(
+                yolk_env.particles,
+                yolk_env.n_particles,
+                yolk_env.spatial_hash,
+                yolk_env.spatial_hash_cell_radius
+            )
+
+            _solve_collision(
+                white_env.particles,
+                white_env.n_particles,
+                white_env.spatial_hash,
+                white_env.collided,
+                white_settings.collision_overlap_factor,
+                white_env.collision_compliance,
+                white_settings.cohesion_interaction_distance_factor,
+                white_env.cohesion_compliance
+            )
+
+            _solve_collision(
+                yolk_env.particles,
+                yolk_env.n_particles,
+                yolk_env.spatial_hash,
+                yolk_env.collided,
+                yolk_settings.collision_overlap_factor,
+                yolk_env.collision_compliance,
+                yolk_settings.cohesion_interaction_distance_factor,
+                yolk_env.cohesion_compliance
+            )
+
+            white_env.min_x, white_env.min_y,
+            white_env.max_x, white_env.max_y,
+            white_env.centroid_x, white_env.centroid_y = _post_solve(
+                white_env.particles,
+                white_env.n_particles,
+                sub_delta
+            )
+
+            yolk_env.min_x, yolk_env.min_y,
+            yolk_env.max_x, yolk_env.max_y,
+            yolk_env.centroid_x, yolk_env.centroid_y = _post_solve(
+                yolk_env.particles,
+                yolk_env.n_particles,
+                sub_delta
+            )
+        end -- i in n_sub_steps
+
+        -- after solver, resize render textures if necessary
+        local resize_canvas_maybe = function(canvas, env)
+            local current_w, current_h = 0, 0
+            if canvas ~= nil then
+                current_w, current_h = canvas:getDimensions()
+            end
+
+            local padding = 2 * settings.particle_texture_padding
+                + env.spatial_hash_cell_radius * self._settings.texture_scale
+
+            local new_w = env.max_x - env.min_x + 2 * padding
+            local new_h = env.max_y - env.min_y + 2 * padding
+
+            if new_w > current_w or new_h > current_h then
+                local new_canvas = love.graphics.newCanvas(
+                    math.max(new_w, current_w),
+                    math.max(new_h, current_h),
+                    {
+                        msaa = settings.canvas_msaa,
+                        format = settings.texture_format
+                    })
+                new_canvas:setFilter("linear", "linear")
+
+                if canvas ~= nil then
+                    canvas:release() -- free old as early as possible, uses quite a lot of vram
+                end
+                return new_canvas
+            else
+                return canvas
+            end
+        end
+
+        self._egg_white_canvas = resize_canvas_maybe(self._egg_white_canvas, white_env)
+        self._egg_yolk_canvas = resize_canvas_maybe(self._egg_yolk_canvas, yolk_env)
+
+        -- keep env of last step
+        self._last_egg_white_env = white_env
+        self._last_egg_yolk_env = yolk_env
+
+        self._canvases_need_update = true
+    end
+end -- step helpers
+
 --- @brief [internal] udpate render textures if necessary, then draw all supplied batches
 function SimulationHandler:_draw(batches)
     if self._egg_white_canvas == nil or self._egg_yolk_canvas == nil then
@@ -1161,7 +1730,7 @@ function SimulationHandler:_draw(batches)
             love.graphics.setBlendMode("alpha", "premultiplied")
 
             local particles = env.particles
-            local texture_scale = debugger.get("texture_scale") --TODO self._settings.texture_scale
+            local texture_scale = self._settings.texture_scale
             for particle_i = 1, env.n_particles do
                 local x, y, z, velocity_x, velocity_y, previous_x, previous_y, radius, mass, inverse_mass, batch_id = _get_property_indices(particle_i)
 
@@ -1207,9 +1776,9 @@ function SimulationHandler:_draw(batches)
         end
     end
 
-    local composite_alpha = 1 -- debugger.get("composite_alpha") -- TODO self._settings.composite_alpha
-    safe_send(self._threshold_shader, "threshold", debugger.get("threshold_shader_threshold")) -- TODO self._settings.threshold_shader_threshold)
-    safe_send(self._threshold_shader, "smoothness", debugger.get("threshold_shader_smoothness")) -- TODO self._settings.threshold_shader_smoothness)
+    local composite_alpha = self._settings.composite_alpha
+    safe_send(self._threshold_shader, "threshold", self._settings.threshold_shader_threshold)
+    safe_send(self._threshold_shader, "smoothness", self._settings.threshold_shader_smoothness)
 
     local draw_canvas = function(canvas, env, color)
         local canvas_width, canvas_height = canvas:getDimensions()
