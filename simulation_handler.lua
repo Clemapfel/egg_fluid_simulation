@@ -183,11 +183,8 @@ end
 --- @brief draw all batches
 --- @return nil
 function SimulationHandler:draw()
-    if love.keyboard.isDown("space") then --self._use_instancing then
-        self:_draw_instanced()
-    else
-        self:_draw()
-    end
+    self:_update_canvases()
+    self:_draw_canvases()
 end
 
 --- @brief update all batches
@@ -318,7 +315,7 @@ function SimulationHandler:_reinitialize()
             end
         end
 
-        self._render_texture_format = "rgba8"-- TODO texture_format
+        self._render_texture_format = texture_format
     end
 end
 
@@ -381,7 +378,7 @@ function SimulationHandler:_initialize_particle_texture()
     local canvas_height = canvas_width
 
     self._particle_texture = love.graphics.newCanvas(canvas_width, canvas_height, {
-            format = "rgba8", -- first [0, 1] format that has 4 components
+            format = self._render_texture_format, -- first [0, 1] format that has 4 components
             msaa = 0,
             readable = true,
             dpiscale = 1
@@ -1243,8 +1240,7 @@ do
                 current_w, current_h = canvas:getDimensions()
             end
 
-            local padding = 2 * sim_settings.particle_texture_padding
-                + 2 * self._max_radius * self._settings.texture_scale -- TODO
+            local padding = -- TODO
 
             local new_w = env.max_x - env.min_x + 2 * padding
             local new_h = env.max_y - env.min_y + 2 * padding
@@ -1288,76 +1284,25 @@ do
         end
     end
 
-    --- @brief [internal]
-    function SimulationHandler:_draw_canvases()
-        love.graphics.push("all")
-        love.graphics.setBlendMode("alpha", "premultiplied")
-        love.graphics.setColor(1, 1, 1, 1)
+    --- @brief [internal] update canvases with particle data
+    function SimulationHandler:_update_canvases()
+        if self._canvases_need_update == false
+            or self._egg_yolk_canvas == nil
+            or self._egg_white_canvas == nil
+        then return end
 
-        local composite_alpha = self._settings.composite_alpha
-        _safe_send(self._threshold_shader, "threshold", self._settings.threshold_shader_threshold)
-        _safe_send(self._threshold_shader, "smoothness", self._settings.threshold_shader_smoothness)
+        self._use_instancing = love.keyboard.isDown("space")
 
-        local draw_canvas = function(canvas, env, color)
-            local canvas_width, canvas_height = canvas:getDimensions()
-            local canvas_x, canvas_y = env.centroid_x - 0.5 * canvas_width,
-            env.centroid_y - 0.5 * canvas_height
-
-            require "common.blend_mode"
-            love.graphics.setBlendMode("alpha", "premultiplied")
-
-            -- premultiply color
-            local r, g, b, a = (unpack or table.unpack)(color)
-            r = r * a * composite_alpha
-            g = g * a * composite_alpha
-            b = b * a * composite_alpha
-            love.graphics.setColor(r, g, b, a)
-
-            --love.graphics.setShader(self._threshold_shader)
-            love.graphics.draw(canvas, canvas_x, canvas_y)
-            love.graphics.setShader()
-        end
-
-        draw_canvas(self._egg_white_canvas, self._last_egg_white_env, self._settings.egg_white.color)
-        draw_canvas(self._egg_yolk_canvas, self._last_egg_yolk_env, self._settings.egg_yolk.color)
-
-        love.graphics.pop()
-    end
-
-    --- @brief [internal] udpate render textures if necessary, then draw all supplied batches
-    function SimulationHandler:_draw()
-        if self._egg_white_canvas == nil or self._egg_yolk_canvas == nil then
-            -- no batches added yet
-            return
-        end
-
-        -- draw particles to canvases
-        if self._canvases_need_update then
-            love.graphics.push("all")
-            love.graphics.reset()
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.setBlendMode("add", "premultiplied")
-
-            local texture_w, texture_h = self._particle_texture:getDimensions()
-            local padding = self._settings.particle_texture_padding
-
-            local draw_env = function(env, canvas, color)
-                local canvas_width, canvas_height = canvas:getDimensions()
-
-                love.graphics.setCanvas(canvas)
-                love.graphics.clear(0, 0, 0, 0)
-                love.graphics.setColor(1, 1, 1, 1)
-
-                -- translate to canvas local space
+        local draw_particles
+        if not self._use_instancing then
+            draw_particles = function(env, _)
                 love.graphics.push()
-                love.graphics.translate(
-                    -env.centroid_x + canvas_width / 2,
-                    -env.centroid_y + canvas_height / 2
-                )
+                love.graphics.translate(-env.centroid_x, -env.centroid_y)
 
                 local particles = env.particles
                 local texture_scale = self._settings.texture_scale
                 local now = love.timer.getTime()
+                local texture_w, texture_h = self._particle_texture:getDimensions()
                 for particle_i = 1, env.n_particles do
                     local i = _particle_i_to_data_offset(particle_i)
                     local radius = particles[i + _radius_offset]
@@ -1366,98 +1311,111 @@ do
                     local velocity_x = particles[i + _velocity_x_offset]
                     local velocity_y = particles[i + _velocity_y_offset]
 
-                    local speed = math.magnitude(velocity_x, velocity_y)
                     local velocity_angle = math.atan2(velocity_y, velocity_x)
-
                     local base_scale = radius * texture_scale
-                    local smear_multiplier = self._settings.motion_blur_multiplier -- increase for more smearing
-                    local smear_amount = 1 + speed * smear_multiplier
+                    local smear_amount = 1 + math.magnitude(velocity_x, velocity_y) * self._settings.motion_blur_multiplier
 
                     local scale_x = base_scale * smear_amount
-                    local scale_y = base_scale -- keep perpendicular scale normal, or reduce slightly
+                    local scale_y = base_scale
 
+                    -- frame interpolation, since sim runs at fixed fps
                     local elapsed = now - self._last_update_timestamp
                     local predicted_x = x + velocity_x * elapsed
                     local predicted_y = y + velocity_y * elapsed
 
                     love.graphics.draw(self._particle_texture,
                         predicted_x, predicted_y,
-                        velocity_angle, -- rotate texture to align with velocity direction
-                        scale_x / texture_w, scale_y / texture_w,
+                        velocity_angle,
+                        scale_x / texture_w * 2, scale_y / texture_w * 2,
                         0.5 * texture_w, 0.5 * texture_h
                     )
                 end
 
                 love.graphics.pop()
-                love.graphics.setCanvas(nil)
             end
-
-            draw_env(self._last_egg_white_env, self._egg_white_canvas)
-            draw_env(self._last_egg_yolk_env, self._egg_yolk_canvas)
-
-            love.graphics.pop()
-            self._canvases_need_update = false
+        else
+            draw_particles = function(env, instance_mesh)
+                love.graphics.push()
+                love.graphics.translate(-env.centroid_x, -env.centroid_y)
+                love.graphics.drawInstanced(instance_mesh, env.n_particles)
+                love.graphics.pop()
+            end
         end
 
-        self:_draw_canvases()
-    end
+        love.graphics.push("all")
+        love.graphics.reset()
+        love.graphics.setBlendMode("add", "premultiplied")
+        love.graphics.setColor(1, 1, 1, 1)
 
-    --- @brief [internal] udpate render textures if necessary, then draw all supplied batches
-    function SimulationHandler:_draw_instanced()
-        if self._white_data_mesh == nil or self._yolk_data_mesh == nil then
-            -- no batches added yet
-            return
-        end
-
-        if self._canvases_need_update then
-            love.graphics.push("all")
-            love.graphics.reset()
-            love.graphics.setColor(1, 1, 1, 1)
-            love.graphics.setBlendMode("add", "premultiplied")
-
+        if self._use_instancing then
             love.graphics.setShader(self._instanced_draw_shader)
             _safe_send(self._instanced_draw_shader, "time_since_last_update", love.timer.getTime() - self._last_update_timestamp)
             _safe_send(self._instanced_draw_shader, "smear_multiplier", self._settings.motion_blur_multiplier)
             _safe_send(self._instanced_draw_shader, "texture_scale", self._settings.texture_scale)
-
-            local draw_env = function(env, instance_mesh, canvas)
-                love.graphics.push()
-
-                local canvas_width, canvas_height = canvas:getDimensions()
-                love.graphics.translate(
-                    -env.centroid_x + canvas_width / 2,
-                    -env.centroid_y + canvas_height / 2
-                )
-
-                love.graphics.setCanvas(canvas)
-                love.graphics.clear(0, 0, 0, 0)
-                love.graphics.setColor(1, 1, 1, 1)
-                love.graphics.drawInstanced(
-                    instance_mesh,
-                    env.n_particles
-                )
-
-                love.graphics.pop()
-                love.graphics.setCanvas(nil)
-            end
-
-            draw_env(self._last_egg_white_env,
-                self._white_instance_mesh,
-                self._egg_white_canvas
-            )
-
-            draw_env(self._last_egg_yolk_env,
-                self._yolk_instance_mesh,
-                self._egg_yolk_canvas
-            )
-
+        else
             love.graphics.setShader(nil)
-            love.graphics.pop()
-
-            self._canvases_need_update = false
         end
 
-        self:_draw_canvases()
+        do -- egg white
+            local canvas = self._egg_white_canvas
+            local canvas_width, canvas_height = canvas:getDimensions()
+            love.graphics.setCanvas(canvas)
+            love.graphics.clear(0, 0, 0, 0)
+
+            love.graphics.push()
+            love.graphics.translate(canvas_width / 2, canvas_height / 2)
+            draw_particles(self._last_egg_white_env, self._white_instance_mesh)
+            love.graphics.pop()
+        end
+
+        do -- egg yolk
+            local canvas = self._egg_yolk_canvas
+            local canvas_width, canvas_height = canvas:getDimensions()
+            love.graphics.setCanvas(canvas)
+            love.graphics.clear(0, 0, 0, 0)
+
+            love.graphics.push()
+            love.graphics.translate(canvas_width / 2, canvas_height / 2)
+            draw_particles(self._last_egg_yolk_env, self._yolk_instance_mesh)
+            love.graphics.pop()
+        end
+
+        love.graphics.pop() -- all
+        self._canvases_need_update = false
+    end
+
+    --- @brief [internal] composite canvases to final image
+    function SimulationHandler:_draw_canvases()
+        if self._egg_white_canvas == nil or self._egg_yolk_canvas == nil then return end
+
+        love.graphics.push("all")
+        love.graphics.setBlendMode("alpha", "premultiplied")
+        love.graphics.setColor(1, 1, 1, 1)
+
+        love.graphics.setShader(self._threshold_shader)
+        _safe_send(self._threshold_shader, "threshold", self._settings.threshold_shader_threshold)
+        _safe_send(self._threshold_shader, "smoothness", self._settings.threshold_shader_smoothness)
+
+        local composite_alpha = self._settings.composite_alpha
+        local draw_canvas = function(canvas, env, color)
+            local canvas_width, canvas_height = canvas:getDimensions()
+            local canvas_x, canvas_y = env.centroid_x - 0.5 * canvas_width,
+            env.centroid_y - 0.5 * canvas_height
+
+            -- premultiply color
+            local r, g, b, a = (unpack or table.unpack)(color)
+            r = r * a * composite_alpha
+            g = g * a * composite_alpha
+            b = b * a * composite_alpha
+            love.graphics.setColor(r, g, b, a)
+            love.graphics.draw(canvas, canvas_x, canvas_y)
+        end
+
+        draw_canvas(self._egg_white_canvas, self._last_egg_white_env, self._settings.egg_white.color)
+        draw_canvas(self._egg_yolk_canvas, self._last_egg_yolk_env, self._settings.egg_yolk.color)
+
+        love.graphics.setShader(nil)
+        love.graphics.pop()
     end
 end
 
