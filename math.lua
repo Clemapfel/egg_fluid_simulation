@@ -56,33 +56,46 @@ function math.magnitude(x, y)
 end
 
 --- @brief calculate dot product of two 2d vectors
---- @param x1 number first vector x
---- @param y1 number first vector y
---- @param x2 number second vector x
---- @param y2 number second vector y
+--- @param x1 number x component of first vector
+--- @param y1 number y component of first vector
+--- @param x2 number x component of second vector
+--- @param y2 number y component of second vector
 --- @return number
 function math.dot(x1, y1, x2, y2)
     return x1 * x2 + y1 * y2
 end
 
 --- @brief calculate cross product of two 2d vectors
---- @param x1 number first vector x
---- @param y1 number first vector y
---- @param x2 number second vector x
---- @param y2 number second vector y
+--- @param x1 number x component of first vector
+--- @param y1 number y component of first vector
+--- @param x2 number x component of second vector
+--- @param y2 number y component of second vector
 --- @return number
 function math.cross(x1, y1, x2, y2)
     return x1 * y2 - y1 * x2
 end
 
---- @brief get distance between two 2d points
---- @param x1 number first point x
---- @param y1 number first point y
---- @param x2 number second point x
---- @param y2 number second point y
+--- @brief get distance between two points
+--- @param x1 number x component of first point
+--- @param y1 number y component of first point
+--- @param x2 number x component of second point
+--- @param y2 number y component of second point
 --- @return number
 function math.distance(x1, y1, x2, y2)
     local dx = x2 - x1
     local dy = y2 - y1
     return math.magnitude(dx, dy)
 end
+
+--- @brief get squared distance between two points
+--- @param x1 number x component of first point
+--- @param y1 number y component of first point
+--- @param x2 number x component of second point
+--- @param y2 number y component of second point
+--- @return number
+function math.squared_distance(x1, y1, x2, y2)
+    local dx = x2 - x1
+    local dy = y2 - y1
+    return math.dot(dx, dy, dx, dy)
+end
+
