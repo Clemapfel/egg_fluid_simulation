@@ -69,6 +69,7 @@ local settings = {
     particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl",
     threshold_shader_path = prefix .. "/simulation_handler_threshold.glsl",
     outline_shader_path = prefix .. "/simulation_handler_outline.glsl",
+    instanced_draw_shader_path = prefix .. "/simulation_handler_instanced_draw.glsl"
 }
 
 local make_proxy = function(t)
@@ -182,7 +183,11 @@ end
 --- @brief draw all batches
 --- @return nil
 function SimulationHandler:draw()
-    self:_draw()
+    if love.keyboard.isDown("space") then --self._use_instancing then
+        self:_draw_instanced()
+    else
+        self:_draw()
+    end
 end
 
 --- @brief update all batches
@@ -208,6 +213,10 @@ function SimulationHandler:update(delta)
             self._elapsed = 0
             break
         end
+    end
+
+    if self._use_instancing then
+        self:_update_data_mesh()
     end
 end
 
@@ -247,7 +256,31 @@ function SimulationHandler:_reinitialize()
     self:_initialize_particle_texture()
 
     self._use_instancing = love.graphics.getSupported().instancing
-    if self._use_instancing then self:_initialize_instance_mesh() end
+    if self._use_instancing then
+        local position_name = "particle_position"
+        local velocity_name = "particle_velocity"
+        local radius_name = "particle_radius"
+
+        if love.getVersion() < 12 then
+            self._data_mesh_format = {
+                { position_name, "float", 2 },
+                { velocity_name, "float", 2 },
+                { radius_name, "float", 1 }
+            }
+        else
+            self._data_mesh_format = {
+                { location = 3, name = position_name, format = "floatvec2" },
+                { location = 4, name = velocity_name, format = "floatvec2" },
+                { location = 5, name = radius_name, format = "float" },
+            }
+        end
+
+        self:_initialize_instance_mesh()
+        self:_update_data_mesh()
+
+        self._white_data_mesh_data = {}
+        self._yolk_data_mesh_data = {}
+    end
 
     self._egg_white_canvas = nil -- love.Canvas
     self._egg_yolk_canvas = nil -- love.Canvas
@@ -285,7 +318,7 @@ function SimulationHandler:_reinitialize()
             end
         end
 
-        self._render_texture_format = texture_format
+        self._render_texture_format = "rgba8"-- TODO texture_format
     end
 end
 
@@ -308,6 +341,7 @@ function SimulationHandler:_initialize_shaders()
     self._particle_texture_shader = new_shader(self._settings.particle_texture_shader_path)
     self._threshold_shader = new_shader(self._settings.threshold_shader_path)
     self._outline_shader = new_shader(self._settings.outline_shader_path)
+    self._instanced_draw_shader = new_shader(self._settings.instanced_draw_shader_path)
 
     -- on vulkan, first use of a shader would cause stutter, so force use here, equivalent to precompiling the shader
     if love.getVersion() >= 12 and love.graphics.getRendererInfo() == "Vulkan" then
@@ -394,7 +428,28 @@ end
 --- @brief [internal] initialize data related to instanced drawing
 function SimulationHandler:_initialize_instance_mesh()
 
+    local new = function()
+        local x, y, r = 0, 0, 1
+        local mesh = love.graphics.newMesh({
+            { x    , y    , 0.5, 0.5,  1, 1, 1, 1 },
+            { x - r, y - r, 0.0, 0.0,  1, 1, 1, 1 },
+            { x + r, y - r, 1.0, 0.0,  1, 1, 1, 1 },
+            { x + r, y + r, 1.0, 1.0,  1, 1, 1, 1 },
+            { x - r, y + r, 0.0, 1.0,  1, 1, 1, 1 }
+        }, "triangles", "static")
 
+        mesh:setVertexMap(
+            1, 2, 3,
+            1, 3, 4,
+            1, 4, 5,
+            1, 5, 2
+        )
+        mesh:setTexture(self._particle_texture)
+        return mesh
+    end
+
+    self._white_instance_mesh = new()
+    self._yolk_instance_mesh = new()
 end
 
 local _x_offset = 0  -- x position, px
@@ -416,6 +471,79 @@ local _stride = _batch_id_offset + 1
 --- convert particle index to index in shared particle property array
 local _particle_i_to_data_offset = function(particle_i)
     return (particle_i - 1) * _stride + 1 -- 1-based
+end
+
+--- @brief [internal]
+function SimulationHandler:_update_data_mesh()
+    local function update_data_mesh(particles, n_particles, instance_mesh, mesh_data, mesh)
+        if n_particles == 0 then return nil end
+        local before = #mesh_data
+        
+        -- update mesh data
+        for particle_i = 1, n_particles do
+            local current = mesh_data[particle_i]
+            if current == nil then
+                current = {}
+                mesh_data[particle_i] = {}
+            end
+
+            local i = _particle_i_to_data_offset(particle_i)
+            current[1] = particles[i + _x_offset]
+            current[2] = particles[i + _y_offset]
+            current[3] = particles[i + _velocity_x_offset]
+            current[4] = particles[i + _velocity_y_offset]
+            current[5] = particles[i + _radius_offset]
+        end
+        
+        while #mesh_data > n_particles do
+            table.remove(mesh_data, #mesh_data)
+        end
+        
+        local after = #mesh_data
+        
+        if mesh == nil or before ~= after then
+            -- if resized, reallocate mesh
+            local data_mesh = love.graphics.newMesh(
+                self._data_mesh_format,
+                mesh_data,
+                "triangles", -- unused, this mesh will never be drawn
+                "stream"
+            )
+
+            -- attach for rendering
+            if love.getVersion() >= 12 then
+                for _, entry in ipairs(self._data_mesh_format) do
+                    instance_mesh:attachAttribute(entry.name, data_mesh, "perinstance")
+                end
+            else
+                for i, entry in ipairs(self._data_mesh_format) do
+                    instance_mesh:attachAttribute(entry[i], data_mesh, "perinstance")
+                end
+            end
+
+            return data_mesh
+        else
+            -- else upload vertex data
+            mesh:setVertices(mesh_data)
+            return mesh
+        end
+    end
+
+    self._white_data_mesh = update_data_mesh(
+        self._white_data,
+        self._total_n_white_particles,
+        self._white_instance_mesh,
+        self._white_data_mesh_data,
+        self._white_data_mesh
+    )
+
+    self._yolk_data_mesh = update_data_mesh(
+        self._yolk_data,
+        self._total_n_yolk_particles,
+        self._yolk_instance_mesh,
+        self._yolk_data_mesh_data,
+        self._yolk_data_mesh
+    )
 end
 
 --- @brief [internal] create a new particle batch
@@ -524,7 +652,8 @@ function SimulationHandler:_new_batch(
 
     batch.n_white_particles = white_n_particles
     batch.n_yolk_particles = yolk_n_particles
-
+    
+    self:_update_data_mesh()
     return batch_id, batch
 end
 
@@ -592,6 +721,7 @@ function SimulationHandler:_remove(white_indices, yolk_indices)
 
     remove_particles(white_indices, self._white_data, "white_particle_indices")
     remove_particles(yolk_indices,  self._yolk_data,  "yolk_particle_indices")
+    self:_update_data_mesh()
 end
 
 -- ### STEP HELPERS ### --
@@ -1114,7 +1244,7 @@ do
             end
 
             local padding = 2 * sim_settings.particle_texture_padding
-                + 2 * self._max_radius * self._settings.texture_scale
+                + 2 * self._max_radius * self._settings.texture_scale -- TODO
 
             local new_w = env.max_x - env.min_x + 2 * padding
             local new_h = env.max_y - env.min_y + 2 * padding
@@ -1154,89 +1284,12 @@ do
     local _safe_send = function(shader, uniform, value)
         local success, error_maybe = pcall(shader.send, shader, uniform, value)
         if not success then
-            self:_error(false, "In SimulationHandler._draw: ", error_maybe)
+            SimulationHandler:_error(false, "In SimulationHandler._draw: ", error_maybe)
         end
     end
 
-    --- @brief [internal] udpate render textures if necessary, then draw all supplied batches
-    function SimulationHandler:_draw()
-        if self._egg_white_canvas == nil or self._egg_yolk_canvas == nil then
-            -- no batches added yet
-            return
-        end
-
-        love.graphics.setColor(1, 1, 1, 1)
-
-        -- draw particles to canvases
-        if self._canvases_need_update then
-            love.graphics.push("all")
-            love.graphics.reset()
-            love.graphics.setBlendMode("add", "premultiplied")
-
-            local texture_w, texture_h = self._particle_texture:getDimensions()
-            local padding = self._settings.particle_texture_padding
-
-            local draw_env = function(env, canvas, color)
-                local canvas_width, canvas_height = canvas:getDimensions()
-
-                love.graphics.setCanvas(canvas)
-                love.graphics.clear(0, 0, 0, 0)
-                love.graphics.setColor(1, 1, 1, 1)
-
-                -- translate to canvas local space
-                love.graphics.push()
-                love.graphics.translate(
-                    -env.centroid_x + canvas_width / 2,
-                    -env.centroid_y + canvas_height / 2
-                )
-
-                love.graphics.setBlendMode("alpha", "premultiplied")
-
-                local particles = env.particles
-                local texture_scale = self._settings.texture_scale
-                local now = love.timer.getTime()
-                for particle_i = 1, env.n_particles do
-                    local i = _particle_i_to_data_offset(particle_i)
-                    local radius = particles[i + _radius_offset]
-                    local x = particles[i + _x_offset]
-                    local y = particles[i + _y_offset]
-                    local velocity_x = particles[i + _velocity_x_offset]
-                    local velocity_y = particles[i + _velocity_y_offset]
-
-                    local speed = math.magnitude(velocity_x, velocity_y)
-                    local velocity_angle = math.atan2(velocity_y, velocity_x)
-
-                    local base_scale = (2 * radius) / (texture_w - 2 * padding) * texture_scale
-                    local smear_multiplier = self._settings.motion_blur_multiplier -- increase for more smearing
-                    local smear_amount = 1 + speed * smear_multiplier
-
-                    local scale_x = base_scale * smear_amount
-                    local scale_y = base_scale -- keep perpendicular scale normal, or reduce slightly
-
-                    local elapsed = now - self._last_update_timestamp
-                    local predicted_x = x + velocity_x * elapsed
-                    local predicted_y = y + velocity_y * elapsed
-
-                    love.graphics.draw(self._particle_texture,
-                        predicted_x, predicted_y,
-                        velocity_angle, -- rotate texture to align with velocity direction
-                        scale_x, scale_y,
-                        0.5 * texture_w, 0.5 * texture_h
-                    )
-                end
-
-                love.graphics.pop()
-                love.graphics.setCanvas(nil)
-            end
-
-            draw_env(self._last_egg_white_env, self._egg_white_canvas)
-            draw_env(self._last_egg_yolk_env, self._egg_yolk_canvas)
-
-            love.graphics.pop()
-            self._canvases_need_update = false
-        end
-
-        -- now draw canvases
+    --- @brief [internal]
+    function SimulationHandler:_draw_canvases()
         love.graphics.push("all")
         love.graphics.setBlendMode("alpha", "premultiplied")
         love.graphics.setColor(1, 1, 1, 1)
@@ -1260,7 +1313,7 @@ do
             b = b * a * composite_alpha
             love.graphics.setColor(r, g, b, a)
 
-            love.graphics.setShader(self._threshold_shader)
+            --love.graphics.setShader(self._threshold_shader)
             love.graphics.draw(canvas, canvas_x, canvas_y)
             love.graphics.setShader()
         end
@@ -1269,6 +1322,142 @@ do
         draw_canvas(self._egg_yolk_canvas, self._last_egg_yolk_env, self._settings.egg_yolk.color)
 
         love.graphics.pop()
+    end
+
+    --- @brief [internal] udpate render textures if necessary, then draw all supplied batches
+    function SimulationHandler:_draw()
+        if self._egg_white_canvas == nil or self._egg_yolk_canvas == nil then
+            -- no batches added yet
+            return
+        end
+
+        -- draw particles to canvases
+        if self._canvases_need_update then
+            love.graphics.push("all")
+            love.graphics.reset()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setBlendMode("add", "premultiplied")
+
+            local texture_w, texture_h = self._particle_texture:getDimensions()
+            local padding = self._settings.particle_texture_padding
+
+            local draw_env = function(env, canvas, color)
+                local canvas_width, canvas_height = canvas:getDimensions()
+
+                love.graphics.setCanvas(canvas)
+                love.graphics.clear(0, 0, 0, 0)
+                love.graphics.setColor(1, 1, 1, 1)
+
+                -- translate to canvas local space
+                love.graphics.push()
+                love.graphics.translate(
+                    -env.centroid_x + canvas_width / 2,
+                    -env.centroid_y + canvas_height / 2
+                )
+
+                local particles = env.particles
+                local texture_scale = self._settings.texture_scale
+                local now = love.timer.getTime()
+                for particle_i = 1, env.n_particles do
+                    local i = _particle_i_to_data_offset(particle_i)
+                    local radius = particles[i + _radius_offset]
+                    local x = particles[i + _x_offset]
+                    local y = particles[i + _y_offset]
+                    local velocity_x = particles[i + _velocity_x_offset]
+                    local velocity_y = particles[i + _velocity_y_offset]
+
+                    local speed = math.magnitude(velocity_x, velocity_y)
+                    local velocity_angle = math.atan2(velocity_y, velocity_x)
+
+                    local base_scale = radius * texture_scale
+                    local smear_multiplier = self._settings.motion_blur_multiplier -- increase for more smearing
+                    local smear_amount = 1 + speed * smear_multiplier
+
+                    local scale_x = base_scale * smear_amount
+                    local scale_y = base_scale -- keep perpendicular scale normal, or reduce slightly
+
+                    local elapsed = now - self._last_update_timestamp
+                    local predicted_x = x + velocity_x * elapsed
+                    local predicted_y = y + velocity_y * elapsed
+
+                    love.graphics.draw(self._particle_texture,
+                        predicted_x, predicted_y,
+                        velocity_angle, -- rotate texture to align with velocity direction
+                        scale_x / texture_w, scale_y / texture_w,
+                        0.5 * texture_w, 0.5 * texture_h
+                    )
+                end
+
+                love.graphics.pop()
+                love.graphics.setCanvas(nil)
+            end
+
+            draw_env(self._last_egg_white_env, self._egg_white_canvas)
+            draw_env(self._last_egg_yolk_env, self._egg_yolk_canvas)
+
+            love.graphics.pop()
+            self._canvases_need_update = false
+        end
+
+        self:_draw_canvases()
+    end
+
+    --- @brief [internal] udpate render textures if necessary, then draw all supplied batches
+    function SimulationHandler:_draw_instanced()
+        if self._white_data_mesh == nil or self._yolk_data_mesh == nil then
+            -- no batches added yet
+            return
+        end
+
+        if self._canvases_need_update then
+            love.graphics.push("all")
+            love.graphics.reset()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setBlendMode("add", "premultiplied")
+
+            love.graphics.setShader(self._instanced_draw_shader)
+            _safe_send(self._instanced_draw_shader, "time_since_last_update", love.timer.getTime() - self._last_update_timestamp)
+            _safe_send(self._instanced_draw_shader, "smear_multiplier", self._settings.motion_blur_multiplier)
+            _safe_send(self._instanced_draw_shader, "texture_scale", self._settings.texture_scale)
+
+            local draw_env = function(env, instance_mesh, canvas)
+                love.graphics.push()
+
+                local canvas_width, canvas_height = canvas:getDimensions()
+                love.graphics.translate(
+                    -env.centroid_x + canvas_width / 2,
+                    -env.centroid_y + canvas_height / 2
+                )
+
+                love.graphics.setCanvas(canvas)
+                love.graphics.clear(0, 0, 0, 0)
+                love.graphics.setColor(1, 1, 1, 1)
+                love.graphics.drawInstanced(
+                    instance_mesh,
+                    env.n_particles
+                )
+
+                love.graphics.pop()
+                love.graphics.setCanvas(nil)
+            end
+
+            draw_env(self._last_egg_white_env,
+                self._white_instance_mesh,
+                self._egg_white_canvas
+            )
+
+            draw_env(self._last_egg_yolk_env,
+                self._yolk_instance_mesh,
+                self._egg_yolk_canvas
+            )
+
+            love.graphics.setShader(nil)
+            love.graphics.pop()
+
+            self._canvases_need_update = false
+        end
+
+        self:_draw_canvases()
     end
 end
 
@@ -1306,7 +1495,7 @@ function SimulationHandler:_error(is_fatal, ...)
     if is_fatal then
         error(message)
     else
-        io.stderr:write(message)
+        io.stderr:write(message .. "\n")
         io.stderr:flush()
     end
 end
