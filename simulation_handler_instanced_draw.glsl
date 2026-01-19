@@ -1,16 +1,22 @@
 #ifdef VERTEX
 
-layout (location = 3) in vec2 particle_position;
+layout (location = 3) in vec4 particle_position;
 layout (location = 4) in vec2 particle_velocity;
 layout (location = 5) in float particle_radius;
+layout (location = 6) in vec4 particle_color;
 
-uniform float time_since_last_update; // seconds
+uniform float interpolation_alpha;
 uniform float smear_multiplier;
 uniform float texture_scale;
+
+varying vec4 color_override;
 
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
     // instance mesh is centered at 0, with radius of 1
     // scale mesh to radius size and offset to position
+
+    vec2 current_position = particle_position.xy;
+    vec2 previous_position = particle_position.zw;
 
     vec2 xy = vertex_position.xy;
     float velocity_angle = atan(particle_velocity.y, particle_velocity.x);
@@ -29,9 +35,22 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
         scaled_vertex.x * sin_angle + scaled_vertex.y * cos_angle
     );
 
-    vec2 offset = particle_position + particle_velocity * time_since_last_update;
+    vec2 offset = mix(previous_position, current_position, interpolation_alpha);
     vertex_position.xy = rotated_vertex + offset;
+
+    color_override = particle_color;
+
     return transform_projection * vertex_position;
+}
+
+#endif
+
+#ifdef PIXEL
+
+varying vec4 color_override;
+
+vec4 effect(vec4 color, sampler2D tex, vec2 texture_coords, vec2 screen_coords) {
+    return texture(tex, texture_coords) * color * color_override;
 }
 
 #endif

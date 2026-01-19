@@ -13,7 +13,7 @@ vec4 effect(vec4 color, sampler2D tex, vec2 texture_coords, vec2 screen_coords) 
     float dist = 2 * (0.5 - distance(texture_coords, vec2(0.5)));
 
     // weight distance with gaussian for gaussian falloff
-    return vec4(gaussian(1 - dist, 1));
+    return vec4(vec3(1), gaussian(1 - dist, 1));
 }
 
 #endif

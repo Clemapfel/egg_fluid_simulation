@@ -13,7 +13,7 @@ local settings = {
     max_n_collision_fraction = 0.4,
 
     -- particle configs for egg white
-    egg_white = {
+    white = {
         particle_density = 1 / 128, -- n particles / px^2
         min_radius = 2, -- px
         max_radius = 2, -- px
@@ -21,7 +21,7 @@ local settings = {
         max_mass = 2, -- fraction
         damping = 0.7, -- in [0, 1], higher is more dampened
 
-        color = { rt.Palette.GRAY_10:unpack() },---{ 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
+        color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
         default_radius = 50 * 1.5, -- total radius of egg white at rest, px
 
         collision_strength = 1, -- in [0, 1]
@@ -34,7 +34,7 @@ local settings = {
     },
 
     -- particle configs for egg yolk
-    egg_yolk = {
+    yolk = {
         particle_density = 1 / 128,
         min_radius = 2,
         max_radius = 2,
@@ -42,7 +42,7 @@ local settings = {
         max_mass = 1.5,
         damping = 0.5,
 
-        color = { rt.Palette.RED:unpack() }, ---{ 255 / 255, 129 / 255, 0 / 255, 1 },
+        color = { 255 / 255, 129 / 255, 0 / 255, 1 },
         default_radius = 15 * 1.5, -- total radius of yolk at rest, px
 
         collision_strength = 1, -- in [0, 1]
@@ -80,9 +80,13 @@ local make_proxy = function(t)
     })
 end
 
-settings.egg_white = make_proxy(settings.egg_white)
-settings.egg_yolk = make_proxy(settings.egg_yolk)
+settings.white = make_proxy(settings.white)
+settings.yolk = make_proxy(settings.yolk)
 settings = make_proxy(settings)
+
+-- error types
+local _FATAL = true
+local _WARNING = false
 
 --- @brief add a new batch to the simulation
 --- @overload fun(self: egg.SimulationHandler, x: number, y: number)
@@ -92,27 +96,43 @@ settings = make_proxy(settings)
 --- @param yolk_radius number? radius of egg yolk, px
 --- @return number id of the new batch
 function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yolk_color)
-    local white_settings = self._settings.egg_white
-    local yolk_settings = self._settings.egg_yolk
+    local white_settings = self._settings.white
+    local yolk_settings = self._settings.yolk
 
     if white_radius == nil then white_radius = white_settings.default_radius end
     if yolk_radius == nil then
         local fraction = yolk_settings.default_radius / white_settings.default_radius
         yolk_radius = white_radius * fraction
     end
+    
+    white_color = white_color or white_settings.color
+    yolk_color = yolk_color or yolk_settings.color
 
     self:_assert(
         x, "number",
         y, "number",
         white_radius, "number",
-        yolk_radius, "number"
+        yolk_radius, "number",
+        white_color, "table",
+        yolk_color, "table"
     )
+    
+    if white_radius <= 0 then 
+        self:_error(_FATAL, "In SimulationHandler.add: white radius cannot be 0 or negative")
+    end
+
+    if yolk_radius <= 0 then
+        self:_error(_FATAL, "In SimulationHandler.add: yolk radius cannot be 0 or negative")
+    end
 
     local white_area = math.pi * white_radius^2 -- area of a circle = pi * r^2
     local white_n_particles = math.max(5, math.ceil(white_settings.particle_density * white_area))
 
     local yolk_area = math.pi * yolk_radius^2
     local yolk_n_particles = math.max(3, math.ceil(yolk_settings.particle_density * yolk_area))
+
+    self._total_n_white_particles = self._total_n_white_particles + white_n_particles
+    self._total_n_yolk_particles = self._total_n_yolk_particles + yolk_n_particles
 
     local batch_id, batch = self:_new_batch(
         x, y,
@@ -122,9 +142,6 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
 
     self._batch_id_to_batch[batch_id] = batch
     self._n_batches = self._n_batches + 1
-
-    self._total_n_white_particles = self._total_n_white_particles + batch.n_white_particles
-    self._total_n_yolk_particles = self._total_n_yolk_particles + batch.n_yolk_particles
 
     return batch_id
 end
@@ -137,7 +154,7 @@ function SimulationHandler:remove(batch_id)
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_error(false, "In SimulationHandler.remove: no batch with id `", batch_id, "`")
+        self:_error(_WARNING, "In SimulationHandler.remove: no batch with id `", batch_id, "`")
         return
     end
 
@@ -158,10 +175,84 @@ function SimulationHandler:set_target_position(batch_id, x, y)
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_error(false, "In SimulationHandler.set_target_position: no batch with id `", batch_id, "`")
+        self:_error(_WARNING, "In SimulationHandler.set_target_position: no batch with id `", batch_id, "`")
     else
         batch.target_x = x
         batch.target_y = y
+    end
+end
+
+do
+    --- argument assertion helper for set_*_color functions
+    local _assert_color = function(scope, r, g, b, a)
+        if a == nil then a = 1 end
+
+        self:_assert(
+            r, "number",
+            g, "number",
+            b, "number",
+            a, "number"
+        )
+        if r > 1 or r < 0
+            or g > 1 or g < 0
+            or b > 1 or b < 0
+            or a > 1 or a < 0
+        then
+            self:_error(_WARNING, "In SimulationHandler.", scope, ": color component is outside of [0, 1]")
+        end
+
+        return math.clamp(r, 0, 1),
+            math.clamp(g, 0, 1),
+            math.clamp(b, 0, 1),
+            math.clamp(a, 0, 1)
+    end
+
+    --- @brief overwrite the color of the yolk particles
+    --- @param batch_id number id of the batch, returned by SimulationHandler.add
+    --- @param r number red component, in [0, 1]
+    --- @param g number green component, in [0, 1]
+    --- @param b number blue component, in [0, 1]
+    --- @param a number opacity component, in [0, 1]
+    function SimulationHandler:set_egg_yolk_color(batch_id, r, g, b, a)
+        self:_assert(batch_id, "number")
+        r, g, b, a = _assert_color("set_egg_yolk_color", r, g, b, a)
+
+        local batch = self._batch_id_to_batch[batch_id]
+        if batch == nil then
+            self:_error(_WARNING, "In SimulationHandler.set_egg_yolk_color: no batch with id `", batch_id, "`")
+        else
+            local color = batch.yolk_color
+            color[1], color[2], color[3], color[4] = r, g, b, a
+            self:_update_particle_color(batch, true) -- yolk only
+        end
+
+        if self._use_instancing then
+            self:_update_color_mesh()
+        end
+    end
+
+    --- @brief overwrite the color of the white particles
+    --- @param batch_id number id of the batch, returned by SimulationHandler.add
+    --- @param r number red component, in [0, 1]
+    --- @param g number green component, in [0, 1]
+    --- @param b number blue component, in [0, 1]
+    --- @param a number opacity component, in [0, 1]
+    function SimulationHandler:set_egg_white_color(batch_id, r, g, b, a)
+        self:_assert(batch_id, "number")
+        r, g, b, a = _assert_color("set_egg_white_color", r, g, b, a)
+
+        local batch = self._batch_id_to_batch[batch_id]
+        if batch == nil then
+            self:_error(_WARNING, "In SimulationHandler.set_egg_white_color: no batch with id `", batch_id, "`")
+        else
+            local color = batch.white_color
+            color[1], color[2], color[3], color[4] = r, g, b, a
+            self:_update_particle_color(batch, false) -- white only
+        end
+
+        if self._use_instancing then
+            self:_update_color_mesh()
+        end
     end
 end
 
@@ -196,7 +287,6 @@ function SimulationHandler:update(delta)
     local n_steps = 0
     while self._elapsed >= step do
         self:_step(step)
-        self._last_update_timestamp = love.timer.getTime()
         self._elapsed = self._elapsed - step
 
         -- safety check to prevent death spiral on lag frames
@@ -207,8 +297,11 @@ function SimulationHandler:update(delta)
         end
     end
 
+    self._interpolation_alpha = math.clamp(self._elapsed / step, 0, 1)
+
     if self._use_instancing then
         self:_update_data_mesh()
+        -- no need to update color mesh
     end
 end
 
@@ -239,6 +332,12 @@ function SimulationHandler:_reinitialize()
     self._yolk_data = {}
     self._total_n_yolk_particles = 0
 
+    self._white_data_mesh_data = {}
+    self._white_color_data_mesh_data = {}
+
+    self._yolk_data_mesh_data = {}
+    self._yolk_color_data_mesh_data = {}
+
     self._max_radius = 1
 
     self._canvases_need_update = false
@@ -247,40 +346,54 @@ function SimulationHandler:_reinitialize()
     self:_initialize_shaders()
     self:_initialize_particle_texture()
 
-    self._use_instancing = love.graphics.getSupported().instancing
+    local supported = love.graphics.getSupported()
+    self._use_instancing = true --[[supported.instancing == true
+        and (supported.glsl3 == true or supported.glsl4 == true)]]
+
     if self._use_instancing then
         local position_name = "particle_position"
         local velocity_name = "particle_velocity"
         local radius_name = "particle_radius"
+        local color_name = "particle_color"
 
         if love.getVersion() < 12 then
             self._data_mesh_format = {
-                { position_name, "float", 2 },
+                { position_name, "float", 4 },
                 { velocity_name, "float", 2 },
                 { radius_name, "float", 1 }
             }
+
+            self._color_mesh_format = {
+                { color_name, "float", 4 }
+            }
         else
             self._data_mesh_format = {
-                { location = 3, name = position_name, format = "floatvec2" },
+                { location = 3, name = position_name, format = "floatvec4" }, -- xy: position, zw: previous position
                 { location = 4, name = velocity_name, format = "floatvec2" },
                 { location = 5, name = radius_name, format = "float" },
+            }
+
+            self._color_mesh_format = {
+                { location = 6, name = color_name, format = "floatvec4" }
             }
         end
 
         self:_initialize_instance_mesh()
-        self:_update_data_mesh()
 
-        self._white_data_mesh_data = {}
-        self._yolk_data_mesh_data = {}
+        -- data and color mesh are separate, as only the data mesh changes every
+        -- frame, uploading the same color every frame to vram is suboptimal
+
+        if self._use_instancing then
+            self:_update_data_mesh()
+            self:_update_color_mesh()
+        end
     end
 
-    self._egg_white_canvas = nil -- love.Canvas
-    self._egg_yolk_canvas = nil -- love.Canvas
+    self._white_canvas = nil -- love.Canvas
+    self._yolk_canvas = nil -- love.Canvas
 
-    self._last_egg_white_env = nil -- cf. _step
-    self._last_egg_yolk_env = nil
-
-    self._last_update_timestamp = love.timer.getTime()
+    self._last_white_env = nil -- cf. _step
+    self._last_yolk_env = nil
 
     do -- texture format needs to have non [0, 1] range, find first available on this machine
         local available_formats
@@ -294,14 +407,8 @@ function SimulationHandler:_reinitialize()
 
         local texture_format = nil
         for _, format in ipairs({
-            "r32f",
-            "r16f",
-            "rg32f",
-            "rg16f",
             "rgba32f",
             "rgba16f",
-            "r8",
-            "rg8",
             "rgba8"
         }) do
             if available_formats[format] == true then
@@ -324,7 +431,7 @@ function SimulationHandler:_initialize_shaders()
         )
 
         if not success then
-            self:_error(true, "In SimulationHandler._initialize_shader: unable to create shader at `", path, "`: ", shader_or_error)
+            self:_error(_FATAL, "In SimulationHandler._initialize_shader: unable to create shader at `", path, "`: ", shader_or_error)
         else
             return shader_or_error
         end
@@ -362,8 +469,8 @@ function SimulationHandler:_initialize_particle_texture()
 
     local settings = self._settings
     local radius = math.max(
-        settings.egg_white.max_radius,
-        settings.egg_yolk.max_radius
+        settings.white.max_radius,
+        settings.yolk.max_radius
     ) * settings.particle_texture_resolution_factor
 
     local padding = self._settings.particle_texture_padding -- px
@@ -419,8 +526,8 @@ end
 
 --- @brief [internal] initialize data related to instanced drawing
 function SimulationHandler:_initialize_instance_mesh()
-
     local new = function()
+        -- 5-vertex quad with side length 1 centered at 0, 0
         local x, y, r = 0, 0, 1
         local mesh = love.graphics.newMesh({
             { x    , y    , 0.5, 0.5,  1, 1, 1, 1 },
@@ -440,6 +547,8 @@ function SimulationHandler:_initialize_instance_mesh()
         return mesh
     end
 
+    -- we need two separate meshes for instance drawing because each
+    -- will have their own data mesh attached that holds all the particle data
     self._white_instance_mesh = new()
     self._yolk_instance_mesh = new()
 end
@@ -454,11 +563,15 @@ local _previous_y_offset = 6 -- last steps y position, px
 local _radius_offset = 7 -- radius, px
 local _mass_offset = 8 -- mass, fraction
 local _inverse_mass_offset = 9 -- 1 / mass, precomputed for performance
-local _cell_x_offset = 10
-local _cell_y_offset = 11
-local _batch_id_offset = 12
+local _cell_x_offset = 10 -- spatial hash x coordinate, set in _step
+local _cell_y_offset = 11 -- spatial hash y coordinate
+local _batch_id_offset = 12 -- batch id
+local _r_offset = 13 -- rgba red
+local _g_offset = 14 -- rgba green
+local _b_offset = 15 -- rgba blue
+local _a_offset = 16 -- rgba opacity
 
-local _stride = _batch_id_offset + 1
+local _stride = _a_offset + 1
 
 --- convert particle index to index in shared particle property array
 local _particle_i_to_data_offset = function(particle_i)
@@ -476,15 +589,19 @@ function SimulationHandler:_update_data_mesh()
             local current = mesh_data[particle_i]
             if current == nil then
                 current = {}
-                mesh_data[particle_i] = {}
+                mesh_data[particle_i] = current
             end
 
             local i = _particle_i_to_data_offset(particle_i)
             current[1] = particles[i + _x_offset]
             current[2] = particles[i + _y_offset]
-            current[3] = particles[i + _velocity_x_offset]
-            current[4] = particles[i + _velocity_y_offset]
-            current[5] = particles[i + _radius_offset]
+            current[3] = particles[i + _previous_x_offset]
+            current[4] = particles[i + _previous_y_offset]
+
+            current[5] = particles[i + _velocity_x_offset]
+            current[6] = particles[i + _velocity_y_offset]
+
+            current[7] = particles[i + _radius_offset]
         end
         
         while #mesh_data > n_particles do
@@ -534,6 +651,77 @@ function SimulationHandler:_update_data_mesh()
         self._total_n_yolk_particles,
         self._yolk_instance_mesh,
         self._yolk_data_mesh_data,
+        self._yolk_data_mesh
+    )
+end
+
+--- @brief [internal]
+function SimulationHandler:_update_color_mesh()
+    local function update_color_mesh(particles, n_particles, instance_mesh, mesh_data, mesh)
+        if n_particles == 0 then return nil end
+        local before = #mesh_data
+
+        for particle_i = 1, n_particles do
+            local current = mesh_data[particle_i]
+            if current == nil then
+                current = {}
+                mesh_data[particle_i] = current
+            end
+
+            local i = _particle_i_to_data_offset(particle_i)
+            current[1] = particles[i + _r_offset]
+            current[2] = particles[i + _g_offset]
+            current[3] = particles[i + _b_offset]
+            current[4] = particles[i + _a_offset]
+        end
+
+        while #mesh_data > n_particles do
+            table.remove(mesh_data, #mesh_data)
+        end
+
+        local after = #mesh_data
+
+        if mesh == nil or before ~= after then
+            -- (re)allocated
+            local color_data_mesh = love.graphics.newMesh(
+                self._color_mesh_format,
+                mesh_data,
+                "triangles", -- unused
+                "stream"
+            )
+
+            -- attach
+            if love.getVersion() >= 12 then
+                for _, entry in ipairs(self._color_mesh_format) do
+                    instance_mesh:attachAttribute(entry.name, color_data_mesh, "perinstance")
+                end
+            else
+                for i, entry in ipairs(self._color_mesh_format) do
+                    instance_mesh:attachAttribute(entry[i], color_data_mesh, "perinstance")
+                end
+            end
+
+            return color_data_mesh
+        else
+            -- else upload vertex data
+            mesh:setVertices(mesh_data)
+            return mesh
+        end
+    end
+
+    self._white_color_data_mesh = update_color_mesh(
+        self._white_data,
+        self._total_n_white_particles,
+        self._white_instance_mesh,
+        self._white_color_data_mesh_data,
+        self._white_color_data_mesh
+    )
+
+    self._yolk_color_data_mesh = update_color_mesh(
+        self._yolk_data,
+        self._total_n_yolk_particles,
+        self._yolk_instance_mesh,
+        self._yolk_color_data_mesh_data,
         self._yolk_data_mesh
     )
 end
@@ -598,7 +786,7 @@ function SimulationHandler:_new_batch(
         array, settings,
         x_radius, y_radius,
         particle_i, n_particles,
-        batch_id
+        color, batch_id
     )
         -- generate position
         local dx, dy = fibonacci_spiral(particle_i, n_particles, x_radius, y_radius)
@@ -617,27 +805,28 @@ function SimulationHandler:_new_batch(
 
         local radius = math.mix(settings.min_radius, settings.max_radius, t)
 
-        local n = #array + 1
-        array[n + _x_offset] = x
-        array[n + _y_offset] = y
-        array[n + _z_offset] = 0
-        array[n + _velocity_x_offset] = 0
-        array[n + _velocity_y_offset] = 0
-        array[n + _previous_x_offset] = x
-        array[n + _previous_y_offset] = y
-        array[n + _radius_offset] = radius
-        array[n + _mass_offset] = mass
-        array[n + _inverse_mass_offset] = 1 / mass
-        array[n + _batch_id_offset] = batch_id
-        array[n + _cell_x_offset] = -math.huge
-        array[n + _cell_y_offset] = -math.huge
+        local i = #array + 1
+        array[i + _x_offset] = x
+        array[i + _y_offset] = y
+        array[i + _z_offset] = 0
+        array[i + _velocity_x_offset] = 0
+        array[i + _velocity_y_offset] = 0
+        array[i + _previous_x_offset] = x
+        array[i + _previous_y_offset] = y
+        array[i + _radius_offset] = radius
+        array[i + _mass_offset] = mass
+        array[i + _inverse_mass_offset] = 1 / mass
+        array[i + _cell_x_offset] = -math.huge
+        array[i + _cell_y_offset] = -math.huge
+        array[i + _batch_id_offset] = batch_id
+        array[i + _r_offset] = color[1]
+        array[i + _g_offset] = color[2]
+        array[i + _b_offset] = color[3]
+        array[i + _a_offset] = color[4]
 
         self._max_radius = math.max(self._max_radius, radius)
-
-        return n
+        return i
     end
-
-
 
     local batch_id = self._current_batch_id
     self._current_batch_id = self._current_batch_id + 1
@@ -645,9 +834,10 @@ function SimulationHandler:_new_batch(
     for i = 1, white_n_particles do
         table.insert(batch.white_particle_indices, add_particle(
             self._white_data,
-            self._settings.egg_white,
+            self._settings.white,
             white_x_radius, white_y_radius,
             i, white_n_particles,
+            batch.white_color,
             batch_id
         ))
     end
@@ -655,17 +845,22 @@ function SimulationHandler:_new_batch(
     for i = 1, yolk_n_particles do
         table.insert(batch.yolk_particle_indices, add_particle(
             self._yolk_data,
-            self._settings.egg_yolk,
+            self._settings.yolk,
             yolk_x_radius, yolk_y_radius,
             i, yolk_n_particles,
+            batch.yolk_color,
             batch_id
         ))
     end
 
     batch.n_white_particles = white_n_particles
     batch.n_yolk_particles = yolk_n_particles
-    
-    self:_update_data_mesh()
+
+    if self._use_instancing then
+        self:_update_data_mesh()
+        self:_update_color_mesh()
+    end
+
     return batch_id, batch
 end
 
@@ -733,7 +928,34 @@ function SimulationHandler:_remove(white_indices, yolk_indices)
 
     remove_particles(white_indices, self._white_data, "white_particle_indices")
     remove_particles(yolk_indices,  self._yolk_data,  "yolk_particle_indices")
-    self:_update_data_mesh()
+
+    if self._use_instancing then
+        self:_update_data_mesh()
+        self:_update_color_mesh()
+    end
+end
+
+--- @brief [internal]
+function SimulationHandler:_update_particle_color(batch, yolk_or_white)
+    local particles, indices, color
+    if yolk_or_white == true then
+        particles = self._yolk_data
+        indices = batch.yolk_particle_indices
+        color = batch.yolk_color
+    elseif yolk_or_white == false then
+        particles = self._white_data
+        indices = batch.white_particle_indices
+        color = batch.white_color
+    end
+
+    local r, g, b, a = (unpack or table.unpack)(color)
+    for _, particle_i in ipairs(indices) do
+        local i = _particle_i_to_data_offset(particle_i)
+        particles[i + _r_offset] = r
+        particles[i + _g_offset] = g
+        particles[i + _b_offset] = b
+        particles[i + _a_offset] = a
+    end
 end
 
 -- ### STEP HELPERS ### --
@@ -749,7 +971,7 @@ do
         end
     end
 
-    --- convert settings settings to XPBD compliance parameters
+    --- convert settings strength to XPBD compliance parameters
     local function _strength_to_compliance(strength, sub_step_delta)
         local alpha = 1 - math.clamp(strength, 0, 1)
         local alpha_per_substep = alpha / (sub_step_delta^2)
@@ -1124,8 +1346,8 @@ do
         local n_collision_steps = self._settings.n_collision_steps
         local sub_delta = delta / n_sub_steps
 
-        local white_settings = sim_settings.egg_white
-        local yolk_settings = sim_settings.egg_yolk
+        local white_settings = sim_settings.white
+        local yolk_settings = sim_settings.yolk
 
         -- setup environments for yolk / white separately
         local function update_environment(old_env, phase_settings, particles, n_particles)
@@ -1159,12 +1381,12 @@ do
         end
 
         local white_env = update_environment(
-            self._last_egg_white_env, white_settings,
+            self._last_white_env, white_settings,
             self._white_data, self._total_n_white_particles
         )
 
         local yolk_env = update_environment(
-            self._last_egg_yolk_env, yolk_settings,
+            self._last_yolk_env, yolk_settings,
             self._yolk_data,  self._total_n_yolk_particles
         )
 
@@ -1312,12 +1534,12 @@ do
             end
         end
 
-        self._egg_white_canvas = resize_canvas_maybe(self._egg_white_canvas, white_env)
-        self._egg_yolk_canvas = resize_canvas_maybe(self._egg_yolk_canvas, yolk_env)
+        self._white_canvas = resize_canvas_maybe(self._white_canvas, white_env)
+        self._yolk_canvas = resize_canvas_maybe(self._yolk_canvas, yolk_env)
 
         -- keep env of last step
-        self._last_egg_white_env = white_env
-        self._last_egg_yolk_env = yolk_env
+        self._last_white_env = white_env
+        self._last_yolk_env = yolk_env
 
         self._canvases_need_update = true
     end
@@ -1335,21 +1557,18 @@ do
     --- @brief [internal] update canvases with particle data
     function SimulationHandler:_update_canvases()
         if self._canvases_need_update == false
-            or self._egg_yolk_canvas == nil
-            or self._egg_white_canvas == nil
+            or self._yolk_canvas == nil
+            or self._white_canvas == nil
         then return end
 
-        self._use_instancing = love.keyboard.isDown("space")
-
         local draw_particles
-        if true then -- TODO not self._use_instancing then
+        if not self._use_instancing then
             draw_particles = function(env, _)
                 love.graphics.push()
                 love.graphics.translate(-env.centroid_x, -env.centroid_y)
 
                 local particles = env.particles
                 local texture_scale = self._settings.texture_scale
-                local now = love.timer.getTime()
                 local texture_w, texture_h = self._particle_texture:getDimensions()
                 for particle_i = 1, env.n_particles do
                     local i = _particle_i_to_data_offset(particle_i)
@@ -1367,9 +1586,17 @@ do
                     local scale_y = base_scale
 
                     -- frame interpolation, since sim runs at fixed fps
-                    local elapsed = now - self._last_update_timestamp
-                    local predicted_x = x + velocity_x * elapsed
-                    local predicted_y = y + velocity_y * elapsed
+                    local t = self._interpolation_alpha
+                    local predicted_x = math.mix(particles[i + _previous_x_offset], x, t)
+                    local predicted_y = math.mix(particles[i + _previous_y_offset], y, t)
+
+                    local alpha = particles[i + _a_offset]
+                    love.graphics.setColor(
+                        particles[i + _r_offset] * alpha,
+                        particles[i + _g_offset] * alpha,
+                        particles[i + _b_offset] * alpha,
+                        particles[i + _a_offset]
+                    )
 
                     love.graphics.draw(self._particle_texture,
                         predicted_x, predicted_y,
@@ -1385,6 +1612,7 @@ do
             draw_particles = function(env, instance_mesh)
                 love.graphics.push()
                 love.graphics.translate(-env.centroid_x, -env.centroid_y)
+                love.graphics.setColor(1, 1, 1, 1)
                 love.graphics.drawInstanced(instance_mesh, env.n_particles)
                 love.graphics.pop()
             end
@@ -1392,12 +1620,11 @@ do
 
         love.graphics.push("all")
         love.graphics.reset()
-        love.graphics.setBlendMode("add", "premultiplied")
-        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.setBlendMode("screen", "premultiplied")
 
         if self._use_instancing then
             love.graphics.setShader(self._instanced_draw_shader)
-            _safe_send(self._instanced_draw_shader, "time_since_last_update", love.timer.getTime() - self._last_update_timestamp)
+            _safe_send(self._instanced_draw_shader, "interpolation_alpha", self._interpolation_alpha)
             _safe_send(self._instanced_draw_shader, "smear_multiplier", self._settings.motion_blur_multiplier)
             _safe_send(self._instanced_draw_shader, "texture_scale", self._settings.texture_scale)
         else
@@ -1405,26 +1632,26 @@ do
         end
 
         do -- egg white
-            local canvas = self._egg_white_canvas
-            local canvas_width, canvas_height = canvas:getDimensions()
-            love.graphics.setCanvas(canvas)
-            love.graphics.clear(0, 0, 0, 1)
-
-            love.graphics.push()
-            love.graphics.translate(canvas_width / 2, canvas_height / 2)
-            draw_particles(self._last_egg_white_env, self._white_instance_mesh)
-            love.graphics.pop()
-        end
-
-        do -- egg yolk
-            local canvas = self._egg_yolk_canvas
+            local canvas = self._white_canvas
             local canvas_width, canvas_height = canvas:getDimensions()
             love.graphics.setCanvas(canvas)
             love.graphics.clear(0, 0, 0, 0)
 
             love.graphics.push()
             love.graphics.translate(canvas_width / 2, canvas_height / 2)
-            draw_particles(self._last_egg_yolk_env, self._yolk_instance_mesh)
+            draw_particles(self._last_white_env, self._white_instance_mesh)
+            love.graphics.pop()
+        end
+
+        do -- egg yolk
+            local canvas = self._yolk_canvas
+            local canvas_width, canvas_height = canvas:getDimensions()
+            love.graphics.setCanvas(canvas)
+            love.graphics.clear(0, 0, 0, 0)
+
+            love.graphics.push()
+            love.graphics.translate(canvas_width / 2, canvas_height / 2)
+            draw_particles(self._last_yolk_env, self._yolk_instance_mesh)
             love.graphics.pop()
         end
 
@@ -1434,33 +1661,33 @@ do
 
     --- @brief [internal] composite canvases to final image
     function SimulationHandler:_draw_canvases()
-        if self._egg_white_canvas == nil or self._egg_yolk_canvas == nil then return end
+        if self._white_canvas == nil or self._yolk_canvas == nil then return end
 
         love.graphics.push("all")
         love.graphics.setBlendMode("alpha", "premultiplied")
-        love.graphics.setColor(1, 1, 1, 1)
+
+        -- respects setColor before SimulationHandler.draw, premultiply alpha
+        local r, g, b, a = love.graphics.getColor()
+        love.graphics.setColor(
+            r * a,
+            g * a,
+            b * a,
+            a * a
+        )
 
         love.graphics.setShader(self._threshold_shader)
         _safe_send(self._threshold_shader, "threshold", self._settings.threshold_shader_threshold)
         _safe_send(self._threshold_shader, "smoothness", self._settings.threshold_shader_smoothness)
 
-        local composite_alpha = self._settings.composite_alpha
-        local draw_canvas = function(canvas, env, color)
+        local draw_canvas = function(canvas, env)
             local canvas_width, canvas_height = canvas:getDimensions()
             local canvas_x, canvas_y = env.centroid_x - 0.5 * canvas_width,
             env.centroid_y - 0.5 * canvas_height
-
-            -- premultiply color
-            local r, g, b, a = (unpack or table.unpack)(color)
-            r = r * a * composite_alpha
-            g = g * a * composite_alpha
-            b = b * a * composite_alpha
-            love.graphics.setColor(r, g, b, a)
             love.graphics.draw(canvas, canvas_x, canvas_y)
         end
 
-        draw_canvas(self._egg_white_canvas, self._last_egg_white_env, self._settings.egg_white.color)
-        draw_canvas(self._egg_yolk_canvas, self._last_egg_yolk_env, self._settings.egg_yolk.color)
+        draw_canvas(self._white_canvas, self._last_white_env)
+        draw_canvas(self._yolk_canvas, self._last_yolk_env)
 
         love.graphics.setShader(nil)
         love.graphics.pop()
@@ -1512,7 +1739,7 @@ function SimulationHandler:_assert(...)
 
     local n = select("#", ...)
     if n % 2 ~= 0 then
-        self:_error(true, "In SimulationHandler._assert: number of arguments is not a multiple of 2")
+        self:_error(_FATAL, "In SimulationHandler._assert: number of arguments is not a multiple of 2")
         return should_exit
     end
 
@@ -1520,7 +1747,7 @@ function SimulationHandler:_assert(...)
         local instance = select(i + 0, ...)
         local instance_type = select(i + 1, ...)
         if not type(instance) == instance_type then
-            self:_error(true, "for argument #", i, ": expected `", instance_type, "`, got `", instance_type, "`")
+            self:_error(_FATAL, "for argument #", i, ": expected `", instance_type, "`, got `", instance_type, "`")
             return should_exit
         end
     end
