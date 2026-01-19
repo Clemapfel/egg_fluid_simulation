@@ -15,6 +15,13 @@ local simulation_handler = nil -- simulation instance
 local egg_batches = {} -- Table<SimulationHandlerBatchID>
 
 -- TODO: remove
+local color_i = 1
+local colors = {
+    rt.Palette.RED,
+    rt.Palette.MINT,
+    rt.Palette.BLUE,
+    rt.Palette.ORANGE
+}
 DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
     if which == "h" then
         simulation_handler:_reinitialize()
@@ -25,8 +32,11 @@ DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
         local range_x, range_y = w * 0.25, h * 0.25
         table.insert(egg_batches, simulation_handler:add(
             rt.random.number(mid_w - range_x, mid_w + range_x),
-            rt.random.number(mid_h - range_y, mid_h + range_y)
+            rt.random.number(mid_h - range_y, mid_h + range_y),
+            50, 15,
+            rt.Palette.GRAY_10, colors[math.wrap(color_i, #colors)]
         ))
+        color_i = color_i + 1
     elseif which == "g" then
         local first = egg_batches[1]
         if first ~= nil then
@@ -68,7 +78,7 @@ love.draw = function()
     local x, y, w, h = 0, 0, love.graphics.getDimensions()
 
     -- background
-    love.graphics.setColor(0.3, 0.2, 0.3, 1)
+    rt.Palette.GRAY_5:bind()
     love.graphics.rectangle("fill", x, y, w, h)
 
     -- draw all egg batches

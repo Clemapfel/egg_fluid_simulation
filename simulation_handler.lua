@@ -15,43 +15,43 @@ local settings = {
     -- particle configs for egg white
     egg_white = {
         particle_density = 1 / 128, -- n particles / px^2
-        min_radius = 4, -- px
-        max_radius = 4, -- px
+        min_radius = 2, -- px
+        max_radius = 2, -- px
         min_mass = 1, -- fraction
-        max_mass = 3, -- fraction
+        max_mass = 2, -- fraction
         damping = 0.7, -- in [0, 1], higher is more dampened
 
-        color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
-        default_radius = 50, -- total radius of egg white at rest, px
+        color = { rt.Palette.GRAY_10:unpack() },---{ 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
+        default_radius = 50 * 1.5, -- total radius of egg white at rest, px
 
         collision_strength = 1, -- in [0, 1]
-        collision_overlap_factor = 10, -- > 0
+        collision_overlap_factor = 2, -- > 0
 
-        cohesion_strength = 0.8, -- in [0, 1]
-        cohesion_interaction_distance_factor = 2,
+        cohesion_strength = 1 - 0.01, -- in [0, 1]
+        cohesion_interaction_distance_factor = 3,
 
-        follow_strength = 1 - 0.001, -- in [0, 1]
+        follow_strength = 0.999, -- in [0, 1]
     },
 
     -- particle configs for egg yolk
     egg_yolk = {
         particle_density = 1 / 128,
-        min_radius = 4,
-        max_radius = 4,
+        min_radius = 2,
+        max_radius = 2,
         min_mass = 1,
         max_mass = 1.5,
         damping = 0.5,
 
-        color = { 255 / 255, 129 / 255, 0 / 255, 1 },
-        default_radius = 16, -- total radius of yolk at rest, px
+        color = { rt.Palette.RED:unpack() }, ---{ 255 / 255, 129 / 255, 0 / 255, 1 },
+        default_radius = 15 * 1.5, -- total radius of yolk at rest, px
 
         collision_strength = 1, -- in [0, 1]
-        collision_overlap_factor = 1, -- > 0
+        collision_overlap_factor = 2, -- > 0
 
-        cohesion_strength = 0.8, -- in [0, 1]
-        cohesion_interaction_distance_factor = 2,
+        cohesion_strength = 1, -- in [0, 1]
+        cohesion_interaction_distance_factor = 6,
 
-        follow_strength = 1 - 0.0009, -- in [0, 1]
+        follow_strength = 0.9991, -- in [0, 1]
     },
 
     -- render texture config
@@ -75,12 +75,7 @@ local settings = {
 local make_proxy = function(t)
     return setmetatable({}, {
         __index = function(self, key)
-            local out = debugger.get(key)
-            if out ~= nil then
-                return out
-            else
-                return rawget(t, key)
-            end
+            return debugger.get(key) or rawget(settings, key) or rawget(t, key)
         end
     })
 end
@@ -96,7 +91,7 @@ settings = make_proxy(settings)
 --- @param white_radius number? radius of the egg white, px
 --- @param yolk_radius number? radius of egg yolk, px
 --- @return number id of the new batch
-function SimulationHandler:add(x, y, white_radius, yolk_radius)
+function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yolk_color)
     local white_settings = self._settings.egg_white
     local yolk_settings = self._settings.egg_yolk
 
@@ -121,8 +116,8 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius)
 
     local batch_id, batch = self:_new_batch(
         x, y,
-        white_radius, white_radius, white_n_particles,
-        yolk_radius, yolk_radius, yolk_n_particles
+        white_radius, white_radius, white_n_particles, white_color,
+        yolk_radius, yolk_radius, yolk_n_particles, yolk_color
     )
 
     self._batch_id_to_batch[batch_id] = batch
@@ -546,12 +541,16 @@ end
 --- @brief [internal] create a new particle batch
 function SimulationHandler:_new_batch(
     center_x, center_y,
-    white_x_radius, white_y_radius, white_n_particles,
-    yolk_x_radius, yolk_y_radius, yolk_n_particles
+    white_x_radius, white_y_radius, white_n_particles, white_color,
+    yolk_x_radius, yolk_y_radius, yolk_n_particles, yolk_color
 )
     local batch = {
         white_particle_indices = {},
         yolk_particle_indices = {},
+        white_radius = math.max(white_x_radius, white_y_radius),
+        yolk_radius = math.max(yolk_x_radius, yolk_y_radius),
+        white_color = white_color,
+        yolk_color = yolk_color,
         target_x = center_x,
         target_y = center_y
     }
@@ -564,7 +563,11 @@ function SimulationHandler:_new_batch(
 
     -- generate normally distributed value in interval
     local random_normal = function(x_radius, y_radius)
-        return math.clamp(love.math.randomNormal(0.25, 0.5), 0, 1)
+        local value
+        repeat
+            value = love.math.randomNormal(0.25, 0.5)
+        until value >= 0 and value <= 1
+        return value
     end
 
     -- uniformly distribute points across the disk using fibonacci spiral
@@ -579,6 +582,15 @@ function SimulationHandler:_new_batch(
         local y = r * y_radius * math.sin(theta)
 
         return x, y
+    end
+
+    -- instead of randomizing masses, precompute them to be in a gaussian-like distribution
+    -- where each value is represented in the interval
+    local get_mass = function(i, n)
+        local t = (i - 1) / n
+        local variance = self._settings.mass_distribution_variance
+        local butterworth = 1 / (1 + (variance * (t - 0.5))^4)
+        return butterworth
     end
 
     -- add particle data to the batch particle property buffer
@@ -596,12 +608,13 @@ function SimulationHandler:_new_batch(
         -- mass and radius use the same interpolation factor, since volume and mass are correlated
         -- we could compute mass as a function of radius, but being able to choose the mass distribution
         -- manually gives more freedom when fine-tuning the simulation
-        local t = random_normal(0, 1)
+        local t = get_mass(particle_i, n_particles)
         local mass = math.mix(
             settings.min_mass,
             settings.max_mass,
             t
         )
+
         local radius = math.mix(settings.min_radius, settings.max_radius, t)
 
         local n = #array + 1
@@ -623,6 +636,8 @@ function SimulationHandler:_new_batch(
 
         return n
     end
+
+
 
     local batch_id = self._current_batch_id
     self._current_batch_id = self._current_batch_id + 1
@@ -752,6 +767,7 @@ do
                 spatial_hash = {}, -- Table<Number, Table<Number>> particle cell hash to list of particles
                 batch_id_to_follow_x = {}, -- Table<Number, Number>
                 batch_id_to_follow_y = {}, -- Table<Number, Number>
+                batch_id_to_radius = {},
 
                 damping = 1, -- overridden in _step
 
@@ -819,8 +835,8 @@ do
     --- make particles move towards target
     local _solve_follow_constraint = function(
         particles, n_particles,
-        compliance,
-        batch_id_to_follow_x, batch_id_to_follow_y
+        batch_id_to_radius, batch_id_to_follow_x, batch_id_to_follow_y,
+        compliance
     )
         for particle_i = 1, n_particles do
             local i = _particle_i_to_data_offset(particle_i)
@@ -828,19 +844,22 @@ do
             local y_i = i + _y_offset
             local inverse_mass_i = i + _inverse_mass_offset
             local batch_id_i = i + _batch_id_offset
+            local radius_i = i + _radius_offset
 
             local batch_id = particles[batch_id_i]
             local follow_x = batch_id_to_follow_x[batch_id]
             local follow_y = batch_id_to_follow_y[batch_id]
 
+            local x, y = particles[x_i], particles[y_i]
+            local current_distance = math.distance(x, y, follow_x, follow_y)
+            local target_distance = batch_id_to_radius[batch_id]
+
             -- XPBD: enforce distance to anchor to be 0
             local inverse_mass = particles[inverse_mass_i]
-            if inverse_mass > math.eps then
-                local x, y = particles[x_i], particles[y_i]
-                local current_distance = math.distance(x, y, follow_x, follow_y)
+            if inverse_mass > math.eps and current_distance > target_distance then
                 local dx, dy = math.normalize(follow_x - x, follow_y - y)
 
-                local constraint_violation = current_distance -- target_distance = 0
+                local constraint_violation = current_distance - target_distance
                 local correction = constraint_violation / (inverse_mass + compliance)
 
                 local x_correction = dx * correction * inverse_mass
@@ -980,6 +999,35 @@ do
                         -- degenerate particle data
                         if self_inverse_mass + other_inverse_mass < math.eps then goto next_pair end
 
+                        do -- cohesion: move particles in the same batch towards each other
+                            local self_x, self_y, other_x, other_y =
+                            particles[self_x_i],  particles[self_y_i],
+                            particles[other_x_i],  particles[other_y_i]
+
+                            local interaction_distance
+                            if self_batch_id == other_batch_id then
+                                interaction_distance = 0
+                            else
+                                interaction_distance = cohesion_interaction_distance_factor * (self_radius + other_radius)
+                            end
+
+                            if self_batch_id ~= other_batch_id and
+                                math.squared_distance(self_x, self_y, other_x, other_y) <= interaction_distance^2
+                            then
+                                local self_correction_x, self_correction_y,
+                                other_correction_x, other_correction_y = _enforce_distance(
+                                    self_x, self_y, other_x, other_y,
+                                    self_inverse_mass, other_inverse_mass,
+                                    interaction_distance, cohesion_compliance
+                                )
+
+                                particles[self_x_i] = self_x + self_correction_x
+                                particles[self_y_i] = self_y + self_correction_y
+                                particles[other_x_i] = other_x + other_correction_x
+                                particles[other_y_i] = other_y + other_correction_y
+                            end
+                        end
+
                         do -- collision: enforce distance between particles to be larger than minimum
                             local min_distance = collision_overlap_factor * (self_radius + other_radius)
 
@@ -1005,49 +1053,26 @@ do
                             end
                         end
 
-                        do -- cohesion: move particles in the same batch towards each other
-                            local interaction_distance = cohesion_interaction_distance_factor * (self_radius + other_radius)
-
-                            local self_x, self_y, other_x, other_y =
-                                particles[self_x_i],  particles[self_y_i],
-                                particles[other_x_i],  particles[other_y_i]
-
-                            if self_batch_id == other_batch_id -- cohesion only for particles in same batch
-                                and math.squared_distance(self_x, self_y, other_x, other_y) <= interaction_distance^2
-                            then
-                                local self_correction_x, self_correction_y,
-                                other_correction_x, other_correction_y = _enforce_distance(
-                                    self_x, self_y, other_x, other_y,
-                                    self_inverse_mass, other_inverse_mass,
-                                    interaction_distance, cohesion_compliance
-                                )
-
-                                particles[self_x_i] = self_x + self_correction_x
-                                particles[self_y_i] = self_y + self_correction_y
-                                particles[other_x_i] = other_x + other_correction_x
-                                particles[other_y_i] = other_y + other_correction_y
-                            end
-                        end
-
                         -- emergency safety check, if too many particles cluster together this avoids slowdown
                         n_collided = n_collided + 1
                         if n_collided >= max_n_collisions then return end
 
                         ::next_pair::
                     end
-
                     ::next_index::
                 end
             end
         end
-
     end
 
-    --- post solve: update true velocity from XPBD correction
+    -- Replace the existing _post_solve with this version.
     local function _post_solve(particles, n_particles, delta)
         local min_x, min_y = math.huge, math.huge
         local max_x, max_y = -math.huge, -math.huge
         local centroid_x, centroid_y = 0, 0
+
+        local max_velocity = 0
+        local max_radius = 0
 
         for particle_i = 1, n_particles do
             local i = _particle_i_to_data_offset(particle_i)
@@ -1057,35 +1082,41 @@ do
             local previous_y_i = i + _previous_y_offset
             local velocity_x_i = i + _velocity_x_offset
             local velocity_y_i = i + _velocity_y_offset
-            local mass_i = i + _mass_offset
             local radius_i = i + _radius_offset
 
             local x = particles[x_i]
             local y = particles[y_i]
 
-            -- update velocity from displacement
-            particles[velocity_x_i] = (x - particles[previous_x_i]) / delta
-            particles[velocity_y_i] = (y - particles[previous_y_i]) / delta
+            local velocity_x = (x - particles[previous_x_i]) / delta
+            local velocity_y = (y - particles[previous_y_i]) / delta
+            particles[velocity_x_i] = velocity_x
+            particles[velocity_y_i] = velocity_y
+
+            local velocity_magnitude = math.magnitude(velocity_x, velocity_y)
+            if velocity_magnitude > max_velocity then
+                max_velocity = velocity_magnitude
+            end
 
             centroid_x = centroid_x + x
             centroid_y = centroid_y + y
 
-            -- log AABB
+            -- log AABB including particle radius
             local r = particles[radius_i]
+            if r > max_radius then max_radius = r end
             min_x = math.min(min_x, x - r)
             min_y = math.min(min_y, y - r)
             max_x = math.max(max_x, x + r)
             max_y = math.max(max_y, y + r)
         end
 
-        -- centroid is arithmetic mean of all particle positions
-        centroid_x = centroid_x / n_particles
-        centroid_y = centroid_y / n_particles
+        if n_particles > 0 then
+            centroid_x = centroid_x / n_particles
+            centroid_y = centroid_y / n_particles
+        end
 
-        return min_x, min_y, max_x, max_y, centroid_x, centroid_y
+        return min_x, min_y, max_x, max_y, centroid_x, centroid_y, max_radius, max_velocity
     end
 
-    --- @brief [internal]
     --- @brief [internal]
     function SimulationHandler:_step(delta)
         local sim_settings = self._settings
@@ -1111,7 +1142,7 @@ do
                 phase_settings.collision_overlap_factor or 1,
                 phase_settings.cohesion_interaction_distance_factor or 1
             )
-            env.spatial_hash_cell_radius = math.max(1, 2 * self._max_radius * max_factor)
+            env.spatial_hash_cell_radius = math.max(1, self._max_radius * max_factor)
 
             -- precompute batch id to follow position for faster access
             for batch_id, batch in pairs(self._batch_id_to_batch) do
@@ -1137,6 +1168,12 @@ do
             self._yolk_data,  self._total_n_yolk_particles
         )
 
+        -- update radii
+        for batch_id, batch in pairs(self._batch_id_to_batch) do
+            white_env.batch_id_to_radius[batch_id] = math.sqrt(batch.white_radius)
+            yolk_env.batch_id_to_radius[batch_id] = math.sqrt(batch.yolk_radius)
+        end
+
         for sub_step_i = 1, n_sub_steps do
             _pre_solve(
                 white_env.particles,
@@ -1155,17 +1192,19 @@ do
             _solve_follow_constraint(
                 white_env.particles,
                 white_env.n_particles,
-                white_env.follow_compliance,
+                white_env.batch_id_to_radius,
                 white_env.batch_id_to_follow_x,
-                white_env.batch_id_to_follow_y
+                white_env.batch_id_to_follow_y,
+                white_env.follow_compliance
             )
 
             _solve_follow_constraint(
                 yolk_env.particles,
                 yolk_env.n_particles,
-                yolk_env.follow_compliance,
+                yolk_env.batch_id_to_radius,
                 yolk_env.batch_id_to_follow_x,
-                yolk_env.batch_id_to_follow_y
+                yolk_env.batch_id_to_follow_y,
+                yolk_env.follow_compliance
             )
 
             for collision_i = 1, n_collision_steps do
@@ -1218,7 +1257,8 @@ do
 
             white_env.min_x, white_env.min_y,
             white_env.max_x, white_env.max_y,
-            white_env.centroid_x, white_env.centroid_y = _post_solve(
+            white_env.centroid_x, white_env.centroid_y,
+            white_env.max_radius, white_env.max_velocity = _post_solve(
                 white_env.particles,
                 white_env.n_particles,
                 sub_delta
@@ -1226,7 +1266,8 @@ do
 
             yolk_env.min_x, yolk_env.min_y,
             yolk_env.max_x, yolk_env.max_y,
-            yolk_env.centroid_x, yolk_env.centroid_y = _post_solve(
+            yolk_env.centroid_x, yolk_env.centroid_y,
+            yolk_env.max_radius, yolk_env.max_velocity = _post_solve(
                 yolk_env.particles,
                 yolk_env.n_particles,
                 sub_delta
@@ -1235,28 +1276,35 @@ do
 
         -- after solver, resize render textures if necessary
         local function resize_canvas_maybe(canvas, env)
+            if env.n_particles == 0 then
+                return canvas
+            end
+
             local current_w, current_h = 0, 0
             if canvas ~= nil then
                 current_w, current_h = canvas:getDimensions()
             end
 
-            local padding = -- TODO
+            -- compute canvas padding
+            local padding = 3 + env.max_radius * self._settings.texture_scale * (1 + self._settings.motion_blur_multiplier * math.max(1, env.max_velocity) * self._settings.step_delta)
 
-            local new_w = env.max_x - env.min_x + 2 * padding
-            local new_h = env.max_y - env.min_y + 2 * padding
+            -- Required canvas size (ceil to integers)
+            local new_w = math.ceil((env.max_x - env.min_x) + 2 * padding)
+            local new_h = math.ceil((env.max_y - env.min_y) + 2 * padding)
 
             if new_w > current_w or new_h > current_h then
                 local new_canvas = love.graphics.newCanvas(
                     math.max(new_w, current_w),
                     math.max(new_h, current_h),
                     {
-                        msaa = sim_settings.canvas_msaa,
+                        msaa = self._settings.canvas_msaa,
                         format = self._render_texture_format
-                    })
+                    }
+                )
                 new_canvas:setFilter("linear", "linear")
 
                 if canvas ~= nil then
-                    canvas:release() -- free old as early as possible, uses quite a lot of vram
+                    canvas:release() -- free old as early as possible, uses vram
                 end
                 return new_canvas
             else
@@ -1294,7 +1342,7 @@ do
         self._use_instancing = love.keyboard.isDown("space")
 
         local draw_particles
-        if not self._use_instancing then
+        if true then -- TODO not self._use_instancing then
             draw_particles = function(env, _)
                 love.graphics.push()
                 love.graphics.translate(-env.centroid_x, -env.centroid_y)
@@ -1360,7 +1408,7 @@ do
             local canvas = self._egg_white_canvas
             local canvas_width, canvas_height = canvas:getDimensions()
             love.graphics.setCanvas(canvas)
-            love.graphics.clear(0, 0, 0, 0)
+            love.graphics.clear(0, 0, 0, 1)
 
             love.graphics.push()
             love.graphics.translate(canvas_width / 2, canvas_height / 2)
