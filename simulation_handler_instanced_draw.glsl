@@ -1,6 +1,8 @@
+#pragma language glsl3
+
 #ifdef VERTEX
 
-layout (location = 3) in vec4 particle_position;
+layout (location = 3) in vec4 particle_position; // xy: current xy, zw: last frame xy
 layout (location = 4) in vec2 particle_velocity;
 layout (location = 5) in float particle_radius;
 layout (location = 6) in vec4 particle_color;

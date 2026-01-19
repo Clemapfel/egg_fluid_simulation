@@ -18,7 +18,7 @@ local settings = {
         min_radius = 2, -- px
         max_radius = 2, -- px
         min_mass = 1, -- fraction
-        max_mass = 2, -- fraction
+        max_mass = 1.8, -- fraction
         damping = 0.7, -- in [0, 1], higher is more dampened
 
         color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
@@ -39,7 +39,7 @@ local settings = {
         min_radius = 2,
         max_radius = 2,
         min_mass = 1,
-        max_mass = 1.5,
+        max_mass = 1.35,
         damping = 0.5,
 
         color = { 255 / 255, 129 / 255, 0 / 255, 1 },
@@ -346,8 +346,8 @@ function SimulationHandler:_reinitialize()
     self:_initialize_particle_texture()
 
     local supported = love.graphics.getSupported()
-    self._use_instancing = true --[[supported.instancing == true
-        and (supported.glsl3 == true or supported.glsl4 == true)]]
+    self._use_instancing = supported.instancing == true
+        and (supported.glsl3 == true or supported.glsl4 == true)
 
     if self._use_instancing then
         local position_name = "particle_position"
@@ -657,6 +657,7 @@ function SimulationHandler:_update_data_mesh()
 end
 
 --- @brief [internal]
+--- @brief [internal]
 function SimulationHandler:_update_color_mesh()
     local function update_color_mesh(particles, n_particles, instance_mesh, mesh_data, mesh)
         if n_particles == 0 then return nil end
@@ -677,13 +678,12 @@ function SimulationHandler:_update_color_mesh()
         end
 
         while #mesh_data > n_particles do
-            table.remove(mesh_data, #mesh_data)
+            mesh_data[#mesh_data] = nil
         end
 
         local after = #mesh_data
 
         if mesh == nil or before ~= after then
-            -- (re)allocated
             local color_data_mesh = love.graphics.newMesh(
                 self._color_mesh_format,
                 mesh_data,
@@ -691,7 +691,6 @@ function SimulationHandler:_update_color_mesh()
                 "stream"
             )
 
-            -- attach
             if love.getVersion() >= 12 then
                 for _, entry in ipairs(self._color_mesh_format) do
                     instance_mesh:attachAttribute(entry.name, color_data_mesh, "perinstance")
@@ -704,7 +703,6 @@ function SimulationHandler:_update_color_mesh()
 
             return color_data_mesh
         else
-            -- else upload vertex data
             mesh:setVertices(mesh_data)
             return mesh
         end
@@ -723,7 +721,7 @@ function SimulationHandler:_update_color_mesh()
         self._total_n_yolk_particles,
         self._yolk_instance_mesh,
         self._yolk_color_data_mesh_data,
-        self._yolk_data_mesh
+        self._yolk_color_data_mesh
     )
 end
 
@@ -773,13 +771,24 @@ function SimulationHandler:_new_batch(
         return x, y
     end
 
-    -- instead of randomizing masses, precompute them to be in a gaussian-like distribution
-    -- where each value is represented in the interval
+    -- instead of pure random mass, mass should always be exactly distributed in gaussian-like curve
     local get_mass = function(i, n)
-        local t = (i - 1) / n
         local variance = self._settings.mass_distribution_variance
-        local butterworth = 1 / (1 + (variance * (t - 0.5))^4)
-        return butterworth
+        local function butterworth(t)
+            return 1 / (1 + (variance * (t - 0.5))^4)
+        end
+
+        -- 2-point gauss-legendre integration, reduces aliasing at low particle counts
+        local left = (i - 1) / n
+        local right = i / n
+
+        local center = 0.5 * (left + right)
+        local half_width = 0.5 * (right - left)
+
+        local t1 = center - half_width / math.sqrt(3)
+        local t2 = center + half_width / math.sqrt(3)
+
+        return 0.5 * (butterworth(t1) + butterworth(t2))
     end
 
     -- add particle data to the batch particle property buffer
@@ -1353,19 +1362,19 @@ do
         local yolk_settings = sim_settings.yolk
 
         -- setup environments for yolk / white separately
-        local function update_environment(old_env, phase_settings, particles, n_particles)
+        local function update_environment(old_env, current_settings, particles, n_particles)
             local env = _create_environment(old_env)
             env.particles = particles
             env.n_particles = n_particles
 
             -- robust collision budget
-            local fraction = sim_settings.max_n_collision_fraction or 0.4
-            env.max_n_collisions = math.max(fraction * env.n_particles * env.n_particles, env.n_particles * 32)
+            local fraction = sim_settings.max_n_collision_fraction
+            env.max_n_collisions = fraction * env.n_particles * env.n_particles
 
             -- compute spatial hash cell radius to cover both collision and cohesion radii
             local max_factor = math.max(
-                phase_settings.collision_overlap_factor or 1,
-                phase_settings.cohesion_interaction_distance_factor or 1
+                current_settings.collision_overlap_factor,
+                current_settings.cohesion_interaction_distance_factor
             )
             env.spatial_hash_cell_radius = math.max(1, self._max_radius * max_factor)
 
@@ -1375,11 +1384,11 @@ do
                 env.batch_id_to_follow_y[batch_id] = batch.target_y
             end
 
-            env.damping = 1 - math.clamp(phase_settings.damping or 0, 0, 1)
+            env.damping = 1 - math.clamp(current_settings.damping, 0, 1)
 
-            env.follow_compliance = _strength_to_compliance(phase_settings.follow_strength, sub_delta)
-            env.collision_compliance = _strength_to_compliance(phase_settings.collision_strength, sub_delta)
-            env.cohesion_compliance = _strength_to_compliance(phase_settings.cohesion_strength, sub_delta)
+            env.follow_compliance = _strength_to_compliance(current_settings.follow_strength, sub_delta)
+            env.collision_compliance = _strength_to_compliance(current_settings.collision_strength, sub_delta)
+            env.cohesion_compliance = _strength_to_compliance(current_settings.cohesion_strength, sub_delta)
             return env
         end
 
@@ -1518,6 +1527,7 @@ do
 
                 if collision_i < n_collision_steps then
                     -- clear after each pass to avoid double counting
+                    -- do not clear on last, already done in _update_environment
                     table.clear(white_env.spatial_hash)
                     table.clear(white_env.collided)
                     table.clear(yolk_env.spatial_hash)
@@ -1556,12 +1566,13 @@ do
             end
 
             -- compute canvas padding
-            local padding = 3 + env.max_radius * self._settings.texture_scale * (1 + self._settings.motion_blur_multiplier * math.max(1, env.max_velocity) * self._settings.step_delta)
+            local padding = env.max_radius * self._settings.texture_scale
+                * (1 +  math.max(1, env.max_velocity) * self._settings.motion_blur_multiplier)
 
-            -- Required canvas size (ceil to integers)
             local new_w = math.ceil((env.max_x - env.min_x) + 2 * padding)
             local new_h = math.ceil((env.max_y - env.min_y) + 2 * padding)
 
+            -- reallocate if canvases needs to grow
             if new_w > current_w or new_h > current_h then
                 local new_canvas = love.graphics.newCanvas(
                     math.max(new_w, current_w),
@@ -1574,7 +1585,7 @@ do
                 new_canvas:setFilter("linear", "linear")
 
                 if canvas ~= nil then
-                    canvas:release() -- free old as early as possible, uses vram
+                    canvas:release() -- free old as early as possible, uses a lot of vram
                 end
                 return new_canvas
             else

@@ -15,7 +15,6 @@ local simulation_handler = nil -- simulation instance
 local egg_batches = {} -- Table<SimulationHandlerBatchID>
 
 -- TODO: remove
-local color_i = 1
 local colors = {
     rt.Palette.RED,
     rt.Palette.MINT,
@@ -30,18 +29,28 @@ DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
     elseif which == "j" then
         local w, h = love.graphics.getDimensions()
         local mid_w, mid_h = w / 2, h / 2
-        local range_x, range_y = w * 0.25, h * 0.25
+        local rx, ry = w * 0.5, h * 0.5
         local white_r, white_g, white_b, white_a = rt.Palette.GRAY_10:unpack()
-        local yolk_r, yolk_g, yolk_b, yolk_a = colors[math.wrap(color_i, #colors)]:unpack()
-        table.insert(egg_batches, simulation_handler:add(
-            rt.random.number(mid_w - range_x, mid_w + range_x),
-            rt.random.number(mid_h - range_y, mid_h + range_y),
-            50, 15--,
-            --{ white_r, white_g, white_b, white_a },
-            --{ yolk_r, yolk_g, yolk_b, yolk_a }
-        ))
+        local yolk_r, yolk_g, yolk_b, yolk_a = colors[math.wrap(#egg_batches, #colors)]:unpack()
 
-        color_i = color_i + 1
+        local corner = math.wrap(#egg_batches, 4)
+        local x, y = mid_w, mid_h
+        if corner == 1 then
+            x, y = mid_w - rx, mid_h - ry
+        elseif corner == 2 then
+            x, y = mid_w + rx, mid_h - ry
+        elseif corner == 3 then
+            x, y = mid_w + rx, mid_h + ry
+        elseif corner == 4 then
+            x, y = mid_w - rx, mid_h + ry
+        end
+
+        table.insert(egg_batches, 1, simulation_handler:add(
+            x, y,
+            50, 15,
+            { white_r, white_g, white_b, white_a },
+            { yolk_r, yolk_g, yolk_b, yolk_a }
+        ))
     elseif which == "g" then
         local last = egg_batches[1]
         if last ~= nil then
