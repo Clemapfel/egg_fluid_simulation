@@ -289,7 +289,6 @@ function SimulationHandler:update(delta)
         self:_step(step)
         self._elapsed = self._elapsed - step
 
-        -- safety check to prevent death spiral on lag frames
         n_steps = n_steps + 1
         if n_steps > settings.max_n_steps then
             self._elapsed = 0
@@ -558,8 +557,8 @@ local _y_offset = 1  -- y position, px
 local _z_offset = 2  -- render priority
 local _velocity_x_offset = 3 -- x velocity, px / s
 local _velocity_y_offset = 4 -- y velocity, px / s
-local _previous_x_offset = 5 -- last steps x position, px
-local _previous_y_offset = 6 -- last steps y position, px
+local _previous_x_offset = 5 -- last sub steps x position, px
+local _previous_y_offset = 6 -- last sub steps y position, px
 local _radius_offset = 7 -- radius, px
 local _mass_offset = 8 -- mass, fraction
 local _inverse_mass_offset = 9 -- 1 / mass, precomputed for performance
@@ -570,8 +569,10 @@ local _r_offset = 13 -- rgba red
 local _g_offset = 14 -- rgba green
 local _b_offset = 15 -- rgba blue
 local _a_offset = 16 -- rgba opacity
+local _last_update_x_offset = 17 -- last whole step x position, px
+local _last_update_y_offset = 18 -- last whole step x position, px
 
-local _stride = _a_offset + 1
+local _stride = _last_update_y_offset + 1
 
 --- convert particle index to index in shared particle property array
 local _particle_i_to_data_offset = function(particle_i)
@@ -595,8 +596,8 @@ function SimulationHandler:_update_data_mesh()
             local i = _particle_i_to_data_offset(particle_i)
             current[1] = particles[i + _x_offset]
             current[2] = particles[i + _y_offset]
-            current[3] = particles[i + _previous_x_offset]
-            current[4] = particles[i + _previous_y_offset]
+            current[3] = particles[i + _last_update_x_offset]
+            current[4] = particles[i + _last_update_y_offset]
 
             current[5] = particles[i + _velocity_x_offset]
             current[6] = particles[i + _velocity_y_offset]
@@ -823,6 +824,8 @@ function SimulationHandler:_new_batch(
         array[i + _g_offset] = color[2]
         array[i + _b_offset] = color[3]
         array[i + _a_offset] = color[4]
+        array[i + _last_update_x_offset] = x
+        array[i + _last_update_y_offset] = y
 
         self._max_radius = math.max(self._max_radius, radius)
         return i
@@ -1355,11 +1358,11 @@ do
             env.particles = particles
             env.n_particles = n_particles
 
-            -- robust collision budget (ensure a reasonable minimum to avoid early exits)
+            -- robust collision budget
             local fraction = sim_settings.max_n_collision_fraction or 0.4
             env.max_n_collisions = math.max(fraction * env.n_particles * env.n_particles, env.n_particles * 32)
 
-            -- compute spatial hash cell radius to cover both collision and cohesion interaction radii
+            -- compute spatial hash cell radius to cover both collision and cohesion radii
             local max_factor = math.max(
                 phase_settings.collision_overlap_factor or 1,
                 phase_settings.cohesion_interaction_distance_factor or 1
@@ -1396,6 +1399,51 @@ do
             yolk_env.batch_id_to_radius[batch_id] = math.sqrt(batch.yolk_radius)
         end
 
+        -- Store last positions for frame interpolation (at the start of this whole step)
+        -- Also compute "last" centroid to match interpolation space during draw.
+        do
+            local particles = white_env.particles
+            local sum_x, sum_y = 0, 0
+            for particle_i = 1, white_env.n_particles do
+                local i = _particle_i_to_data_offset(particle_i)
+                local x = particles[i + _x_offset]
+                local y = particles[i + _y_offset]
+                particles[i + _last_update_x_offset] = x
+                particles[i + _last_update_y_offset] = y
+                sum_x = sum_x + x
+                sum_y = sum_y + y
+            end
+            if white_env.n_particles > 0 then
+                white_env.last_centroid_x = sum_x / white_env.n_particles
+                white_env.last_centroid_y = sum_y / white_env.n_particles
+            else
+                white_env.last_centroid_x = 0
+                white_env.last_centroid_y = 0
+            end
+        end
+
+        do
+            local particles = yolk_env.particles
+            local sum_x, sum_y = 0, 0
+            for particle_i = 1, yolk_env.n_particles do
+                local i = _particle_i_to_data_offset(particle_i)
+                local x = particles[i + _x_offset]
+                local y = particles[i + _y_offset]
+                particles[i + _last_update_x_offset] = x
+                particles[i + _last_update_y_offset] = y
+                sum_x = sum_x + x
+                sum_y = sum_y + y
+            end
+            if yolk_env.n_particles > 0 then
+                yolk_env.last_centroid_x = sum_x / yolk_env.n_particles
+                yolk_env.last_centroid_y = sum_y / yolk_env.n_particles
+            else
+                yolk_env.last_centroid_x = 0
+                yolk_env.last_centroid_y = 0
+            end
+        end
+
+        -- step the simulation
         for sub_step_i = 1, n_sub_steps do
             _pre_solve(
                 white_env.particles,
@@ -1469,7 +1517,7 @@ do
                 )
 
                 if collision_i < n_collision_steps then
-                    -- clear afeter each pass to avoid double counting
+                    -- clear after each pass to avoid double counting
                     table.clear(white_env.spatial_hash)
                     table.clear(white_env.collided)
                     table.clear(yolk_env.spatial_hash)
@@ -1535,11 +1583,11 @@ do
         end
 
         self._white_canvas = resize_canvas_maybe(self._white_canvas, white_env)
-        self._yolk_canvas = resize_canvas_maybe(self._yolk_canvas, yolk_env)
+        self._yolk_canvas  = resize_canvas_maybe(self._yolk_canvas,  yolk_env)
 
         -- keep env of last step
         self._last_white_env = white_env
-        self._last_yolk_env = yolk_env
+        self._last_yolk_env  = yolk_env
 
         self._canvases_need_update = true
     end
@@ -1561,11 +1609,17 @@ do
             or self._white_canvas == nil
         then return end
 
+        local t = self._interpolation_alpha
+
         local draw_particles
         if not self._use_instancing then
             draw_particles = function(env, _)
+                -- Interpolate centroid to match particle interpolation
+                local cx = math.mix(env.last_centroid_x or env.centroid_x, env.centroid_x, t)
+                local cy = math.mix(env.last_centroid_y or env.centroid_y, env.centroid_y, t)
+
                 love.graphics.push()
-                love.graphics.translate(-env.centroid_x, -env.centroid_y)
+                love.graphics.translate(-cx, -cy)
 
                 local particles = env.particles
                 local texture_scale = self._settings.texture_scale
@@ -1585,10 +1639,9 @@ do
                     local scale_x = base_scale * smear_amount
                     local scale_y = base_scale
 
-                    -- frame interpolation, since sim runs at fixed fps
-                    local t = self._interpolation_alpha
-                    local predicted_x = math.mix(particles[i + _previous_x_offset], x, t)
-                    local predicted_y = math.mix(particles[i + _previous_y_offset], y, t)
+                    -- frame interpolation (between last and current whole step)
+                    local predicted_x = math.mix(particles[i + _last_update_x_offset], x, t)
+                    local predicted_y = math.mix(particles[i + _last_update_y_offset], y, t)
 
                     local alpha = particles[i + _a_offset]
                     love.graphics.setColor(
@@ -1610,8 +1663,12 @@ do
             end
         else
             draw_particles = function(env, instance_mesh)
+                -- Interpolate centroid to match shader-side particle interpolation
+                local cx = math.mix(env.last_centroid_x or env.centroid_x, env.centroid_x, t)
+                local cy = math.mix(env.last_centroid_y or env.centroid_y, env.centroid_y, t)
+
                 love.graphics.push()
-                love.graphics.translate(-env.centroid_x, -env.centroid_y)
+                love.graphics.translate(-cx, -cy)
                 love.graphics.setColor(1, 1, 1, 1)
                 love.graphics.drawInstanced(instance_mesh, env.n_particles)
                 love.graphics.pop()
@@ -1624,7 +1681,7 @@ do
 
         if self._use_instancing then
             love.graphics.setShader(self._instanced_draw_shader)
-            _safe_send(self._instanced_draw_shader, "interpolation_alpha", self._interpolation_alpha)
+            _safe_send(self._instanced_draw_shader, "interpolation_alpha", t)
             _safe_send(self._instanced_draw_shader, "smear_multiplier", self._settings.motion_blur_multiplier)
             _safe_send(self._instanced_draw_shader, "texture_scale", self._settings.texture_scale)
         else
