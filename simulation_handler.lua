@@ -73,7 +73,7 @@ function SimulationHandler:remove(batch_id)
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_warning( "In SimulationHandler.remove: no batch with id `", batch_id, "`")
+        self:_warning("In SimulationHandler.remove: no batch with id `", batch_id, "`")
         return
     end
 
@@ -145,6 +145,15 @@ end
 function SimulationHandler:set_yolk_config(config)
     self:_assert(config, "table")
     self:_load_config(config, false) -- egg yolk
+end
+
+--- @brief TODO
+function SimulationHandler:set_outline_thickness(white_thickness, yolk_thickness)
+    if yolk_thickness == nil then yolk_thickness = white_thickness end
+    self:_assert(white_thickness, "number", yolk_thickness, "number")
+
+    self._white_config.outline_thickness = white_thickness
+    self._yolk_config.outline_thickness = yolk_thickness
 end
 
 --- @brief set the target position a batch should move to
@@ -300,10 +309,13 @@ function SimulationHandler.new()
     })
 
     -- default white / yolk configs
-    
+    local outline_thickness = 1
+    local particle_radius = 4
+    local base_damping = 0.1
+
     self._white_config = {
         -- mutable properties, apply to the next `update` call
-        damping = 0.1,
+        damping = base_damping,
 
         follow_strength = 1 - 0.004,
 
@@ -315,18 +327,22 @@ function SimulationHandler.new()
 
         color = { 0.961, 0.961, 0.953, 1 },
         outline_color = { 0.973, 0.796, 0.529, 1 },
+        outline_thickness = outline_thickness,
+
+        lighting_use_highlight = false,
+        lighting_use_shadow = true,
 
         -- static properties, only apply for `add` after they were set, they do not apply to old batches
         min_mass = 1,
         max_mass = 1.8,
 
-        min_radius = 2,
-        max_radius = 2
+        min_radius = particle_radius,
+        max_radius = particle_radius
     }
 
     self._yolk_config = {
         -- mutable
-        damping = 0.1,
+        damping = base_damping ,
 
         follow_strength = 1 - 0.004,
 
@@ -338,13 +354,17 @@ function SimulationHandler.new()
 
         color = { 0.969, 0.682, 0.141, 1 },
         outline_color = { 0.984, 0.522, 0.271, 1 },
+        outline_thickness = outline_thickness,
+
+        lighting_use_highlight = true,
+        lighting_use_shadow = false,
 
         -- static
         min_mass = 1,
         max_mass = 1.35,
 
-        min_radius = 2,
-        max_radius = 2
+        min_radius = particle_radius,
+        max_radius = particle_radius
     }
 
     self._motion_blur_multiplier = 0.0005 -- scale per px/s, factor of velocity magnitude
@@ -352,17 +372,19 @@ function SimulationHandler.new()
 
     -- immutable properties
     self._particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl"
-    self._threshold_shader_path = prefix .. "/simulation_handler_threshold.glsl"
     self._outline_shader_path = prefix .. "/simulation_handler_outline.glsl"
     self._instanced_draw_shader_path = prefix .. "/simulation_handler_instanced_draw.glsl"
+    self._lighting_shader_path = prefix .. "/simulation_handler_lighting.glsl"
 
-    self._threshold_shader_threshold = 0.3 -- in [0, 1]
-    self._threshold_shader_smoothness = 0.02 -- in [0, threshold_shader_threshold)
+    self._thresholding_threshold = 0.3 -- in [0, 1]
+    self._thresholding_smoothness = 0.01 -- in [0, threshold_shader_threshold)
     self._outline_color_darkening = 0.25 -- in [0, 1], multiplies color.rgb
 
     self._mass_distribution_variance = 4 -- unitless, (2 * n) with n >= 1
     self._max_collision_fraction = 0.05 -- fraction
     self._particle_density = 1 / 128 -- particles per px^2
+    self._use_particle_color = false -- whether particle rgb should be accumulated for the final image
+    self._use_lighting = true
 
     -- render texture config
     self._canvas_msaa = 4 -- msaa for render textures
@@ -465,8 +487,8 @@ function SimulationHandler:_reinitialize()
 
         local texture_format = nil
         for _, format in ipairs({
-            "rgba32f",
             "rgba16f",
+            "rgba32f",
             "rgba8"
         }) do
             if available_formats[format] == true then
@@ -496,9 +518,17 @@ function SimulationHandler:_initialize_shaders()
     end
 
     self._particle_texture_shader = new_shader(self._particle_texture_shader_path)
-    self._threshold_shader = new_shader(self._threshold_shader_path)
     self._outline_shader = new_shader(self._outline_shader_path)
     self._instanced_draw_shader = new_shader(self._instanced_draw_shader_path)
+    self._lighting_shader = new_shader(self._lighting_shader_path)
+
+    DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
+        if which == "l" then
+            self._lighting_shader = new_shader(self._lighting_shader_path)
+            self._outline_shader = new_shader(self._outline_shader_path)
+            dbg("called")
+        end
+    end)
 
     -- on vulkan, first use of a shader would cause stutter, so force use here, equivalent to precompiling the shader
     if love.getVersion() >= 12 and love.graphics.getRendererInfo() == "Vulkan" then
@@ -887,10 +917,19 @@ function SimulationHandler:_new_batch(
         array[i + _cell_x_offset] = -math.huge
         array[i + _cell_y_offset] = -math.huge
         array[i + _batch_id_offset] = batch_id
-        array[i + _r_offset] = color[1]
-        array[i + _g_offset] = color[2]
-        array[i + _b_offset] = color[3]
-        array[i + _a_offset] = color[4]
+
+        if self._use_particle_color then
+            array[i + _r_offset] = color[1]
+            array[i + _g_offset] = color[2]
+            array[i + _b_offset] = color[3]
+            array[i + _a_offset] = color[4]
+        else
+            array[i + _r_offset] = 1
+            array[i + _g_offset] = 1
+            array[i + _b_offset] = 1
+            array[i + _a_offset] = 1
+        end
+
         array[i + _last_update_x_offset] = x
         array[i + _last_update_y_offset] = y
 
@@ -1691,10 +1730,10 @@ end -- step helpers
 
 do
     --- update a love shader uniform with error handling
-    local _safe_send = function(shader, uniform, value)
+    local _send = function(shader, uniform, value)
         local success, error_maybe = pcall(shader.send, shader, uniform, value)
         if not success then
-            SimulationHandler:_error(false, "In SimulationHandler._draw: ", error_maybe)
+            --SimulationHandler:_warning("In SimulationHandler._draw: ", error_maybe)
         end
     end
 
@@ -1710,7 +1749,7 @@ do
         local draw_particles
         if not self._use_instancing then
             draw_particles = function(env, _)
-                -- Interpolate centroid to match particle interpolation
+                -- interpolate centroid to match particle interpolation
                 local cx = math.mix(env.last_centroid_x or env.centroid_x, env.centroid_x, t)
                 local cy = math.mix(env.last_centroid_y or env.centroid_y, env.centroid_y, t)
 
@@ -1777,9 +1816,9 @@ do
 
         if self._use_instancing then
             love.graphics.setShader(self._instanced_draw_shader)
-            _safe_send(self._instanced_draw_shader, "interpolation_alpha", t)
-            _safe_send(self._instanced_draw_shader, "smear_multiplier", self._motion_blur_multiplier)
-            _safe_send(self._instanced_draw_shader, "texture_scale", self._texture_scale)
+            _send(self._instanced_draw_shader, "interpolation_alpha", t)
+            _send(self._instanced_draw_shader, "smear_multiplier", self._motion_blur_multiplier)
+            _send(self._instanced_draw_shader, "texture_scale", self._texture_scale)
         else
             love.graphics.setShader(nil)
         end
@@ -1817,30 +1856,52 @@ do
         if self._white_canvas == nil or self._yolk_canvas == nil then return end
 
         love.graphics.push("all")
-        love.graphics.setBlendMode("alpha", "premultiplied")
+        love.graphics.setBlendMode("alpha", "alphamultiply")
 
-        -- respects setColor before SimulationHandler.draw, premultiply alpha
-        local r, g, b, a = love.graphics.getColor()
-        love.graphics.setColor(
-            r * a,
-            g * a,
-            b * a,
-            a * a
-        )
+        -- reuse threshold parameters
+        _send(self._outline_shader, "threshold", self._thresholding_threshold)
 
-        love.graphics.setShader(self._threshold_shader)
-        _safe_send(self._threshold_shader, "threshold", self._threshold_shader_threshold)
-        _safe_send(self._threshold_shader, "smoothness", self._threshold_shader_smoothness)
+        _send(self._lighting_shader, "threshold", self._thresholding_threshold)
+        _send(self._lighting_shader, "smoothness", self._thresholding_smoothness)
+        _send(self._lighting_shader, "use_particle_color", self._use_particle_color)
 
-        local draw_canvas = function(canvas, env)
+        local draw_canvas = function(canvas, env, config)
             local canvas_width, canvas_height = canvas:getDimensions()
             local canvas_x = env.centroid_x - 0.5 * canvas_width
             local canvas_y = env.centroid_y - 0.5 * canvas_height
+
+            local color = config.color
+            local outline_color = config.outline_color
+            local outline_thickness = config.outline_thickness
+
+            love.graphics.setShader(self._outline_shader)
+            _send(self._outline_shader, "outline_thickness", outline_thickness)
+            love.graphics.setColor(outline_color)
             love.graphics.draw(canvas, canvas_x, canvas_y)
+
+            if self._use_particle_color then
+                love.graphics.setColor(1, 1, 1, 1)
+            else
+                love.graphics.setColor(color)
+            end
+
+            love.graphics.setShader(self._lighting_shader)
+            _send(self._lighting_shader, "use_highlight", config.lighting_use_highlight)
+            _send(self._lighting_shader, "use_shadow", config.lighting_use_shadow)
+            love.graphics.draw(canvas, canvas_x, canvas_y)
+
+            love.graphics.setShader(nil)
         end
 
-        draw_canvas(self._white_canvas, self._last_white_env)
-        draw_canvas(self._yolk_canvas, self._last_yolk_env)
+        draw_canvas(self._white_canvas,
+            self._last_white_env,
+            self._white_config
+        )
+
+        draw_canvas(self._yolk_canvas,
+            self._last_yolk_env,
+            self._yolk_config
+        )
 
         love.graphics.setShader(nil)
         love.graphics.pop()
