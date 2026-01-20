@@ -4,89 +4,11 @@ require(prefix .. ".math")
 --- @class egg.SimulationHandler
 local SimulationHandler = {}
 
---- @brief table of simulation parameters, this default is used for any setting not specified
-local settings = {
-    -- overall fps, the simulation will be run at this fixed rate, regardless of fps
-    step_delta = 1 / 60, -- seconds
-    max_n_steps = 8, -- cf. update
-    n_sub_steps = 1, -- number of solver sub steps
-    max_n_collision_fraction = 0.4,
+--[[
+    Egg XPBD Simulation
 
-    -- particle configs for egg white
-    white = {
-        particle_density = 1 / 128, -- n particles / px^2
-        min_radius = 2, -- px
-        max_radius = 2, -- px
-        min_mass = 1, -- fraction
-        max_mass = 1.8, -- fraction
-        damping = 0.7, -- in [0, 1], higher is more dampened
 
-        color = { 253 / 255, 253 / 255, 255 / 255, 1 }, -- rgba, components in [0, 1]
-        default_radius = 50 * 1.5, -- total radius of egg white at rest, px
-
-        collision_strength = 1, -- in [0, 1]
-        collision_overlap_factor = 2, -- > 0
-
-        cohesion_strength = 1 - 0.01, -- in [0, 1]
-        cohesion_interaction_distance_factor = 3,
-
-        follow_strength = 0.999, -- in [0, 1]
-    },
-
-    -- particle configs for egg yolk
-    yolk = {
-        particle_density = 1 / 128,
-        min_radius = 2,
-        max_radius = 2,
-        min_mass = 1,
-        max_mass = 1.35,
-        damping = 0.5,
-
-        color = { 255 / 255, 129 / 255, 0 / 255, 1 },
-        default_radius = 15 * 1.5, -- total radius of yolk at rest, px
-
-        collision_strength = 1, -- in [0, 1]
-        collision_overlap_factor = 2, -- > 0
-
-        cohesion_strength = 1, -- in [0, 1]
-        cohesion_interaction_distance_factor = 6,
-
-        follow_strength = 0.9991, -- in [0, 1]
-    },
-
-    -- render texture config
-    canvas_msaa = 4, -- msaa for render textures
-    particle_texture_padding = 3, -- px
-    particle_texture_resolution_factor = 4, -- fraction
-    texture_scale = 4, -- fraction
-
-    -- shader config
-    composite_alpha = 0.5,
-    threshold_shader_threshold = 0.5, -- in [0, 1]
-    threshold_shader_smoothness = 0.001,
-
-    -- shader paths
-    particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl",
-    threshold_shader_path = prefix .. "/simulation_handler_threshold.glsl",
-    outline_shader_path = prefix .. "/simulation_handler_outline.glsl",
-    instanced_draw_shader_path = prefix .. "/simulation_handler_instanced_draw.glsl"
-}
-
-local make_proxy = function(t)
-    return setmetatable({}, {
-        __index = function(self, key)
-            return debugger.get(key) or rawget(settings, key) or rawget(t, key)
-        end
-    })
-end
-
-settings.white = make_proxy(settings.white)
-settings.yolk = make_proxy(settings.yolk)
-settings = make_proxy(settings)
-
--- error types
-local _FATAL = true
-local _WARNING = false
+]]--
 
 --- @brief add a new batch to the simulation
 --- @overload fun(self: egg.SimulationHandler, x: number, y: number)
@@ -96,17 +18,14 @@ local _WARNING = false
 --- @param yolk_radius number? radius of egg yolk, px
 --- @return number id of the new batch
 function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yolk_color)
-    local white_settings = self._settings.white
-    local yolk_settings = self._settings.yolk
-
-    if white_radius == nil then white_radius = white_settings.default_radius end
+    if white_radius == nil then white_radius = 50 end
     if yolk_radius == nil then
-        local fraction = yolk_settings.default_radius / white_settings.default_radius
-        yolk_radius = white_radius * fraction
+        yolk_radius = white_radius * (10 / 50)
+        -- fraction experimentally determined to look nice
     end
     
-    white_color = white_color or white_settings.color
-    yolk_color = yolk_color or yolk_settings.color
+    white_color = white_color or self._white_config.color
+    yolk_color = yolk_color or self._yolk_config.color
 
     self:_assert(
         x, "number",
@@ -118,18 +37,18 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
     )
     
     if white_radius <= 0 then 
-        self:_error(_FATAL, "In SimulationHandler.add: white radius cannot be 0 or negative")
+        self:_error( "In SimulationHandler.add: white radius cannot be 0 or negative")
     end
 
     if yolk_radius <= 0 then
-        self:_error(_FATAL, "In SimulationHandler.add: yolk radius cannot be 0 or negative")
+        self:_error( "In SimulationHandler.add: yolk radius cannot be 0 or negative")
     end
 
     local white_area = math.pi * white_radius^2 -- area of a circle = pi * r^2
-    local white_n_particles = math.max(5, math.ceil(white_settings.particle_density * white_area))
+    local white_n_particles = math.max(5, math.ceil(self._particle_density * white_area))
 
     local yolk_area = math.pi * yolk_radius^2
-    local yolk_n_particles = math.max(3, math.ceil(yolk_settings.particle_density * yolk_area))
+    local yolk_n_particles = math.max(5, math.ceil(self._particle_density * yolk_area))
 
     self._total_n_white_particles = self._total_n_white_particles + white_n_particles
     self._total_n_yolk_particles = self._total_n_yolk_particles + yolk_n_particles
@@ -154,7 +73,7 @@ function SimulationHandler:remove(batch_id)
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_error(_WARNING, "In SimulationHandler.remove: no batch with id `", batch_id, "`")
+        self:_warning( "In SimulationHandler.remove: no batch with id `", batch_id, "`")
         return
     end
 
@@ -166,6 +85,68 @@ function SimulationHandler:remove(batch_id)
     self:_remove(batch.white_particle_indices, batch.yolk_particle_indices)
 end
 
+--- @brief draw all batches
+--- @return nil
+function SimulationHandler:draw()
+    self:_update_canvases()
+    self:_draw_canvases()
+end
+
+--- @brief update all batches
+--- @param step_delta number TODO
+--- @param n_substeps number TODO
+--- @param n_collision_steps number TODO
+function SimulationHandler:update(delta, step_delta, n_substeps, n_collision_steps)
+    if step_delta == nil then step_delta = 1 / 60 end
+    if n_substeps == nil then n_substeps = 2 end
+    if n_collision_steps == nil then n_collision_steps = 3 end
+
+    self:_assert(
+        delta, "number",
+        step_delta, "number",
+        n_substeps, "number",
+        n_collision_steps, "number"
+    )
+
+    -- accumulate delta time, run sim at fixed framerate for better stability
+    self._elapsed = self._elapsed + delta
+    local step = step_delta
+    local n_steps = 0
+    local max_n_steps = math.max(4, 4 * math.ceil((1 / 60) / step_delta))
+    while self._elapsed >= step do
+        self:_step(step, n_substeps, n_collision_steps)
+        self._elapsed = self._elapsed - step
+
+        -- safety check to prevent death spiral
+        n_steps = n_steps + 1
+        if n_steps > max_n_steps then
+            self._elapsed = 0
+            break
+        end
+    end
+
+    self._interpolation_alpha = math.clamp(self._elapsed / step, 0, 1)
+
+    if self._use_instancing then
+        self:_update_data_mesh()
+        -- no need to update color mesh
+    end
+end
+
+--- @brief update the mutable simulation parameters for the white
+--- @param config table table of properties, see the readme for a list of valid properties
+function SimulationHandler:set_white_config(config)
+    self:_assert(config, "table")
+    self:_load_config(config, true) -- egg white
+end
+
+--- @brief update the mutable simulation parameters for the yolk
+--- @param config table table of properties, see the readme for a list of valid properties
+function SimulationHandler:set_yolk_config(config)
+    self:_assert(config, "table")
+    self:_load_config(config, false) -- egg yolk
+end
+
 --- @brief set the target position a batch should move to
 --- @param batch_id number batch id returned by SimulationHandler.add
 --- @param x number x coordinate, in px
@@ -175,7 +156,7 @@ function SimulationHandler:set_target_position(batch_id, x, y)
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_error(_WARNING, "In SimulationHandler.set_target_position: no batch with id `", batch_id, "`")
+        self:_warning( "In SimulationHandler.set_target_position: no batch with id `", batch_id, "`")
     else
         batch.target_x = x
         batch.target_y = y
@@ -198,7 +179,7 @@ do
             or b > 1 or b < 0
             or a > 1 or a < 0
         then
-            self:_error(_WARNING, "In SimulationHandler.", scope, ": color component is outside of [0, 1]")
+            self:_warning( "In SimulationHandler.", scope, ": color component is outside of [0, 1]")
         end
 
         return math.clamp(r, 0, 1),
@@ -213,13 +194,26 @@ do
     --- @param g number green component, in [0, 1]
     --- @param b number blue component, in [0, 1]
     --- @param a number opacity component, in [0, 1]
-    function SimulationHandler:set_egg_yolk_color(batch_id, r, g, b, a)
+    function SimulationHandler:set_yolk_color(batch_id,
+        r, g, b, a,
+        outline_r, outline_g, outline_b, outline_a
+    )
         self:_assert(batch_id, "number")
         r, g, b, a = _assert_color("set_egg_yolk_color", r, g, b, a)
 
+        local darkening = self._outline_color_darkening
+        if outline_r == nil then outline_r = r * darkening end
+        if outline_g == nil then outline_g = g * darkening end
+        if outline_b == nil then outline_b = b * darkening end
+        if outline_a == nil then outline_a = a end
+
+        outline_r, outline_g, outline_b, outline_a = _assert_color("set_white_color",
+            outline_r, outline_g, outline_b, outline_a
+        )
+
         local batch = self._batch_id_to_batch[batch_id]
         if batch == nil then
-            self:_error(_WARNING, "In SimulationHandler.set_egg_yolk_color: no batch with id `", batch_id, "`")
+            self:_warning( "In SimulationHandler.set_egg_yolk_color: no batch with id `", batch_id, "`")
         else
             local color = batch.yolk_color
             color[1], color[2], color[3], color[4] = r, g, b, a
@@ -237,13 +231,26 @@ do
     --- @param g number green component, in [0, 1]
     --- @param b number blue component, in [0, 1]
     --- @param a number opacity component, in [0, 1]
-    function SimulationHandler:set_egg_white_color(batch_id, r, g, b, a)
+    function SimulationHandler:set_white_color(batch_id,
+        r, g, b, a,
+        outline_r, outline_g, outline_b, outline_a
+    )
         self:_assert(batch_id, "number")
-        r, g, b, a = _assert_color("set_egg_white_color", r, g, b, a)
+        r, g, b, a = _assert_color("set_white_color", r, g, b, a)
+
+        local darkening = self._outline_color_darkening
+        if outline_r == nil then outline_r = r * darkening end
+        if outline_g == nil then outline_g = g * darkening end
+        if outline_b == nil then outline_b = b * darkening end
+        if outline_a == nil then outline_a = a end
+
+        outline_r, outline_g, outline_b, outline_a = _assert_color("set_white_color",
+            outline_r, outline_g, outline_b, outline_a
+        )
 
         local batch = self._batch_id_to_batch[batch_id]
         if batch == nil then
-            self:_error(_WARNING, "In SimulationHandler.set_egg_white_color: no batch with id `", batch_id, "`")
+            self:_warning( "In SimulationHandler.set_white_color: no batch with id `", batch_id, "`")
         else
             local color = batch.white_color
             color[1], color[2], color[3], color[4] = r, g, b, a
@@ -256,6 +263,25 @@ do
     end
 end
 
+--- @brief TODO
+function SimulationHandler:set_motion_blur(velocity_factor)
+    self:_assert(velocity_factor, "number")
+    if velocity_factor < 0 then
+        self:_error( "In SimulationHandler.set_motion_blur: value cannot be negative")
+    end
+
+    self._motion_blur_multiplier = velocity_factor
+end
+
+--- @brief
+function SimulationHandler:set_particle_texture_scale(scale)
+    if scale < 0 then
+        self:_error( "In SimulationHandler.set_particle_texture_scale: value cannot be negative")
+    end
+
+    self._texture_scale = scale
+end
+
 --- @brief list the ids of all batches
 --- @return number[] array of batch ids
 function SimulationHandler:list_ids()
@@ -266,61 +292,92 @@ function SimulationHandler:list_ids()
     return ids
 end
 
---- @brief draw all batches
---- @return nil
-function SimulationHandler:draw()
-    self:_update_canvases()
-    self:_draw_canvases()
-end
-
---- @brief update all batches
-function SimulationHandler:update(delta)
-    self:_assert(
-        delta, "number"
-    )
-
-    local settings = self._settings
-
-    -- accumulate delta time, run sim at fixed framerate for better stability
-    self._elapsed = self._elapsed + delta
-    local step = settings.step_delta
-    local n_steps = 0
-    while self._elapsed >= step do
-        self:_step(step)
-        self._elapsed = self._elapsed - step
-
-        n_steps = n_steps + 1
-        if n_steps > settings.max_n_steps then
-            self._elapsed = 0
-            break
-        end
-    end
-
-    self._interpolation_alpha = math.clamp(self._elapsed / step, 0, 1)
-
-    if self._use_instancing then
-        self:_update_data_mesh()
-        -- no need to update color mesh
-    end
-end
-
--- ### internals, never call any of the functions below ### --
-
---- @brief [internal] allocate a new instance
---- @param settings table? override settings
-function SimulationHandler._new() -- sic, no :, self is returned instance, not type
+--- @brief create a new simulation handler instance. Usually this function is not called directly, use `instance = SimulationHandler()` instead
+function SimulationHandler.new()
+    -- sic, no :, self is returned instance, not type
     local self = setmetatable({}, {
         __index = SimulationHandler
     })
 
-    self._settings = settings
-    self:_reinitialize()
+    -- default white / yolk configs
+    
+    self._white_config = {
+        -- mutable properties, apply to the next `update` call
+        damping = 0.1,
 
+        follow_strength = 1 - 0.004,
+
+        cohesion_strength = 1 - 0.001,
+        cohesion_interaction_distance_factor = 3,
+
+        collision_strength = 1,
+        collision_overlap_factor = 2,
+
+        color = { 0.961, 0.961, 0.953, 1 },
+        outline_color = { 0.973, 0.796, 0.529, 1 },
+
+        -- static properties, only apply for `add` after they were set, they do not apply to old batches
+        min_mass = 1,
+        max_mass = 1.8,
+
+        min_radius = 2,
+        max_radius = 2
+    }
+
+    self._yolk_config = {
+        -- mutable
+        damping = 0.1,
+
+        follow_strength = 1 - 0.004,
+
+        cohesion_strength = 1 - 0.002,
+        cohesion_interaction_distance_factor = 3,
+
+        collision_strength = 1 - 0.001,
+        collision_overlap_factor = 2,
+
+        color = { 0.969, 0.682, 0.141, 1 },
+        outline_color = { 0.984, 0.522, 0.271, 1 },
+
+        -- static
+        min_mass = 1,
+        max_mass = 1.35,
+
+        min_radius = 2,
+        max_radius = 2
+    }
+
+    self._motion_blur_multiplier = 0.0005 -- scale per px/s, factor of velocity magnitude
+    self._texture_scale = 12 -- fraction, > 1
+
+    -- immutable properties
+    self._particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl"
+    self._threshold_shader_path = prefix .. "/simulation_handler_threshold.glsl"
+    self._outline_shader_path = prefix .. "/simulation_handler_outline.glsl"
+    self._instanced_draw_shader_path = prefix .. "/simulation_handler_instanced_draw.glsl"
+
+    self._threshold_shader_threshold = 0.3 -- in [0, 1]
+    self._threshold_shader_smoothness = 0.02 -- in [0, threshold_shader_threshold)
+    self._outline_color_darkening = 0.25 -- in [0, 1], multiplies color.rgb
+
+    self._mass_distribution_variance = 4 -- unitless, (2 * n) with n >= 1
+    self._max_collision_fraction = 0.05 -- fraction
+    self._particle_density = 1 / 128 -- particles per px^2
+
+    -- render texture config
+    self._canvas_msaa = 4 -- msaa for render textures
+    self._particle_texture_padding = 3 -- px
+    self._particle_texture_resolution_factor = 4 -- fraction
+
+    self:_reinitialize()
     return self
 end
 
+-- ### internals, never call any of the functions below ### --
+
 --- @brief [internal] clear the simulation, useful for debugging
 function SimulationHandler:_reinitialize()
+    -- internal properties
     self._batch_id_to_batch = {}
     self._current_batch_id = 1
     self._n_batches = 0
@@ -338,9 +395,11 @@ function SimulationHandler:_reinitialize()
     self._yolk_color_data_mesh_data = {}
 
     self._max_radius = 1
-
+    
     self._canvases_need_update = false
+    
     self._elapsed = 0
+    self._interpolation_alpha = 0
 
     self:_initialize_shaders()
     self:_initialize_particle_texture()
@@ -430,16 +489,16 @@ function SimulationHandler:_initialize_shaders()
         )
 
         if not success then
-            self:_error(_FATAL, "In SimulationHandler._initialize_shader: unable to create shader at `", path, "`: ", shader_or_error)
+            self:_error( "In SimulationHandler._initialize_shader: unable to create shader at `", path, "`: ", shader_or_error)
         else
             return shader_or_error
         end
     end
 
-    self._particle_texture_shader = new_shader(self._settings.particle_texture_shader_path)
-    self._threshold_shader = new_shader(self._settings.threshold_shader_path)
-    self._outline_shader = new_shader(self._settings.outline_shader_path)
-    self._instanced_draw_shader = new_shader(self._settings.instanced_draw_shader_path)
+    self._particle_texture_shader = new_shader(self._particle_texture_shader_path)
+    self._threshold_shader = new_shader(self._threshold_shader_path)
+    self._outline_shader = new_shader(self._outline_shader_path)
+    self._instanced_draw_shader = new_shader(self._instanced_draw_shader_path)
 
     -- on vulkan, first use of a shader would cause stutter, so force use here, equivalent to precompiling the shader
     if love.getVersion() >= 12 and love.graphics.getRendererInfo() == "Vulkan" then
@@ -466,20 +525,19 @@ function SimulationHandler:_initialize_particle_texture()
     -- instead love.graphics.scale'ing based on particle size,
     -- this way all draws are batched
 
-    local settings = self._settings
     local radius = math.max(
-        settings.white.max_radius,
-        settings.yolk.max_radius
-    ) * settings.particle_texture_resolution_factor
+        self._white_config.max_radius,
+        self._yolk_config.max_radius
+    ) * self._particle_texture_resolution_factor
 
-    local padding = self._settings.particle_texture_padding -- px
+    local padding = self._particle_texture_padding -- px
 
     -- create canvas, transparent outer padding so derivative on borders is 0
     local canvas_width = (radius + padding) * 2
     local canvas_height = canvas_width
 
     self._particle_texture = love.graphics.newCanvas(canvas_width, canvas_height, {
-            format = self._render_texture_format, -- first [0, 1] format that has 4 components
+            format = self._render_texture_format,
             msaa = 0,
             readable = true,
             dpiscale = 1
@@ -773,7 +831,7 @@ function SimulationHandler:_new_batch(
 
     -- instead of pure random mass, mass should always be exactly distributed in gaussian-like curve
     local get_mass = function(i, n)
-        local variance = self._settings.mass_distribution_variance
+        local variance = self._mass_distribution_variance
         local function butterworth(t)
             return 1 / (1 + (variance * (t - 0.5))^4)
         end
@@ -793,7 +851,7 @@ function SimulationHandler:_new_batch(
 
     -- add particle data to the batch particle property buffer
     local add_particle = function(
-        array, settings,
+        array, config,
         x_radius, y_radius,
         particle_i, n_particles,
         color, batch_id
@@ -808,12 +866,12 @@ function SimulationHandler:_new_batch(
         -- manually gives more freedom when fine-tuning the simulation
         local t = get_mass(particle_i, n_particles)
         local mass = math.mix(
-            settings.min_mass,
-            settings.max_mass,
+            config.min_mass,
+            config.max_mass,
             t
         )
 
-        local radius = math.mix(settings.min_radius, settings.max_radius, t)
+        local radius = math.mix(config.min_radius, config.max_radius, t)
 
         local i = #array + 1
         array[i + _x_offset] = x
@@ -846,7 +904,7 @@ function SimulationHandler:_new_batch(
     for i = 1, white_n_particles do
         table.insert(batch.white_particle_indices, add_particle(
             self._white_data,
-            self._settings.white,
+            self._white_config,
             white_x_radius, white_y_radius,
             i, white_n_particles,
             batch.white_color,
@@ -857,7 +915,7 @@ function SimulationHandler:_new_batch(
     for i = 1, yolk_n_particles do
         table.insert(batch.yolk_particle_indices, add_particle(
             self._yolk_data,
-            self._settings.yolk,
+            self._yolk_config,
             yolk_x_radius, yolk_y_radius,
             i, yolk_n_particles,
             batch.yolk_color,
@@ -970,6 +1028,52 @@ function SimulationHandler:_update_particle_color(batch, yolk_or_white)
     end
 end
 
+do
+    local _valid_config_key_to_type = {
+        damping = "number",
+        color = "table",
+        collision_strength = "number",
+        collision_overlap_factor = "number",
+        cohesion_strength = "number",
+        cohesion_interaction_distance_factor = "number",
+        follow_strength = "number",
+    }
+
+    --- @brief [internal] override config setting
+    function SimulationHandler:_load_config(config, white_or_yolk)
+        for key, value in pairs(config) do
+            local value_type = _valid_config_key_to_type[config]
+            local is_valid = true
+
+            if value_type == nil then
+                self:_warning( "In SimulationHandler._load_config: unrecognized config key `", key, "`. It will be ignored")
+                is_valid = false
+            elseif type(value) ~= value_type then
+                self:_error( "In SimulationHandler._load_config: wrong type for `", key, "`. Expected `", value_type, "`, got `", type(value), "`")
+                is_valid = false
+            end
+
+            if value_type == "number" then
+                if value ~= value then -- is NaN
+                    self:_warning( "In SimulationHandler._load_config: value for key `", key, "` is NaN. It will be ignored")
+                    is_valid = false
+                elseif value == math.huge or value == -math.huge then
+                    self:_warning( "In SimulationHandler._load_config: value for key `", key, "` is infinity. It will be ignored")
+                    is_valid = false
+                end
+            end
+
+            if is_valid then
+                if white_or_yolk == true then
+                    self._white_config[key] = value
+                elseif white_or_yolk == false then
+                    self._yolk_config[key] = value
+                end
+            end
+        end
+    end
+end
+
 -- ### STEP HELPERS ### --
 do
     -- table.clear, fallback implementations for non luajit
@@ -983,7 +1087,7 @@ do
         end
     end
 
-    --- convert settings strength to XPBD compliance parameters
+    --- convert config strength to XPBD compliance parameters
     local function _strength_to_compliance(strength, sub_step_delta)
         local alpha = 1 - math.clamp(strength, 0, 1)
         local alpha_per_substep = alpha / (sub_step_delta^2)
@@ -1086,7 +1190,7 @@ do
 
             local x, y = particles[x_i], particles[y_i]
             local current_distance = math.distance(x, y, follow_x, follow_y)
-            local target_distance = batch_id_to_radius[batch_id]
+            local target_distance = 2 * batch_id_to_radius[batch_id]
 
             -- XPBD: enforce distance to anchor to be 0
             local inverse_mass = particles[inverse_mass_i]
@@ -1270,7 +1374,6 @@ do
                                 particles[other_x_i],  particles[other_y_i]
 
                             local distance = math.squared_distance(self_x, self_y, other_x, other_y)
-                            -- use squared distance, slightly more performant
 
                             if distance <= min_distance^2 then
                                 local self_correction_x, self_correction_y,
@@ -1299,7 +1402,7 @@ do
         end
     end
 
-    -- Replace the existing _post_solve with this version.
+    --- update true velocity, get aabb and centroid
     local function _post_solve(particles, n_particles, delta)
         local min_x, min_y = math.huge, math.huge
         local max_x, max_y = -math.huge, -math.huge
@@ -1351,32 +1454,28 @@ do
         return min_x, min_y, max_x, max_y, centroid_x, centroid_y, max_radius, max_velocity
     end
 
-    --- @brief [internal]
-    function SimulationHandler:_step(delta)
-        local sim_settings = self._settings
-        local n_sub_steps = sim_settings.n_sub_steps
-        local n_collision_steps = self._settings.n_collision_steps
+    --- @brief [internal] step the simulation
+    function SimulationHandler:_step(delta, n_sub_steps, n_collision_steps)
         local sub_delta = delta / n_sub_steps
 
-        local white_settings = sim_settings.white
-        local yolk_settings = sim_settings.yolk
-
         -- setup environments for yolk / white separately
-        local function update_environment(old_env, current_settings, particles, n_particles)
+        local function update_environment(old_env, config, particles, n_particles)
             local env = _create_environment(old_env)
             env.particles = particles
             env.n_particles = n_particles
 
-            -- robust collision budget
-            local fraction = sim_settings.max_n_collision_fraction
-            env.max_n_collisions = fraction * env.n_particles * env.n_particles
+            -- collision budget, limit maximum number of collisions processed per step
+            -- this is to guard against all particles being so close together that the
+            -- number of collision explodes
+            local fraction = self._max_collision_fraction
+            env.max_n_collisions = fraction * env.n_particles^2
 
             -- compute spatial hash cell radius to cover both collision and cohesion radii
             local max_factor = math.max(
-                current_settings.collision_overlap_factor,
-                current_settings.cohesion_interaction_distance_factor
+                config.collision_overlap_factor,
+                config.cohesion_interaction_distance_factor
             )
-            env.spatial_hash_cell_radius = math.max(1, self._max_radius * max_factor)
+            env.spatial_hash_cell_radius = math.max(1, config.max_radius * max_factor)
 
             -- precompute batch id to follow position for faster access
             for batch_id, batch in pairs(self._batch_id_to_batch) do
@@ -1384,21 +1483,23 @@ do
                 env.batch_id_to_follow_y[batch_id] = batch.target_y
             end
 
-            env.damping = 1 - math.clamp(current_settings.damping, 0, 1)
+            env.damping = 1 - math.clamp(config.damping, 0, 1)
 
-            env.follow_compliance = _strength_to_compliance(current_settings.follow_strength, sub_delta)
-            env.collision_compliance = _strength_to_compliance(current_settings.collision_strength, sub_delta)
-            env.cohesion_compliance = _strength_to_compliance(current_settings.cohesion_strength, sub_delta)
+            env.follow_compliance = _strength_to_compliance(config.follow_strength, sub_delta)
+            env.collision_compliance = _strength_to_compliance(config.collision_strength, sub_delta)
+            env.cohesion_compliance = _strength_to_compliance(config.cohesion_strength, sub_delta)
             return env
         end
 
+        local white_config = self._white_config
         local white_env = update_environment(
-            self._last_white_env, white_settings,
+            self._last_white_env, white_config,
             self._white_data, self._total_n_white_particles
         )
 
+        local yolk_config = self._yolk_config
         local yolk_env = update_environment(
-            self._last_yolk_env, yolk_settings,
+            self._last_yolk_env, yolk_config,
             self._yolk_data,  self._total_n_yolk_particles
         )
 
@@ -1408,12 +1509,10 @@ do
             yolk_env.batch_id_to_radius[batch_id] = math.sqrt(batch.yolk_radius)
         end
 
-        -- Store last positions for frame interpolation (at the start of this whole step)
-        -- Also compute "last" centroid to match interpolation space during draw.
-        do
-            local particles = white_env.particles
+        local update_last_positions = function(env)
+            local particles = env.particles
             local sum_x, sum_y = 0, 0
-            for particle_i = 1, white_env.n_particles do
+            for particle_i = 1, env.n_particles do
                 local i = _particle_i_to_data_offset(particle_i)
                 local x = particles[i + _x_offset]
                 local y = particles[i + _y_offset]
@@ -1422,35 +1521,18 @@ do
                 sum_x = sum_x + x
                 sum_y = sum_y + y
             end
-            if white_env.n_particles > 0 then
-                white_env.last_centroid_x = sum_x / white_env.n_particles
-                white_env.last_centroid_y = sum_y / white_env.n_particles
+
+            if env.n_particles > 0 then
+                env.last_centroid_x = sum_x / env.n_particles
+                env.last_centroid_y = sum_y / env.n_particles
             else
-                white_env.last_centroid_x = 0
-                white_env.last_centroid_y = 0
+                env.last_centroid_x = 0
+                env.last_centroid_y = 0
             end
         end
 
-        do
-            local particles = yolk_env.particles
-            local sum_x, sum_y = 0, 0
-            for particle_i = 1, yolk_env.n_particles do
-                local i = _particle_i_to_data_offset(particle_i)
-                local x = particles[i + _x_offset]
-                local y = particles[i + _y_offset]
-                particles[i + _last_update_x_offset] = x
-                particles[i + _last_update_y_offset] = y
-                sum_x = sum_x + x
-                sum_y = sum_y + y
-            end
-            if yolk_env.n_particles > 0 then
-                yolk_env.last_centroid_x = sum_x / yolk_env.n_particles
-                yolk_env.last_centroid_y = sum_y / yolk_env.n_particles
-            else
-                yolk_env.last_centroid_x = 0
-                yolk_env.last_centroid_y = 0
-            end
-        end
+        update_last_positions(white_env)
+        update_last_positions(yolk_env)
 
         -- step the simulation
         for sub_step_i = 1, n_sub_steps do
@@ -1506,9 +1588,9 @@ do
                     white_env.n_particles,
                     white_env.spatial_hash,
                     white_env.collided,
-                    white_settings.collision_overlap_factor,
+                    white_config.collision_overlap_factor,
                     white_env.collision_compliance,
-                    white_settings.cohesion_interaction_distance_factor,
+                    white_config.cohesion_interaction_distance_factor,
                     white_env.cohesion_compliance,
                     white_env.max_n_collisions
                 )
@@ -1518,9 +1600,9 @@ do
                     yolk_env.n_particles,
                     yolk_env.spatial_hash,
                     yolk_env.collided,
-                    yolk_settings.collision_overlap_factor,
+                    yolk_config.collision_overlap_factor,
                     yolk_env.collision_compliance,
-                    yolk_settings.cohesion_interaction_distance_factor,
+                    yolk_config.cohesion_interaction_distance_factor,
                     yolk_env.cohesion_compliance,
                     yolk_env.max_n_collisions
                 )
@@ -1566,11 +1648,14 @@ do
             end
 
             -- compute canvas padding
-            local padding = env.max_radius * self._settings.texture_scale
-                * (1 +  math.max(1, env.max_velocity) * self._settings.motion_blur_multiplier)
+            local padding = env.max_radius * self._texture_scale
+                * (1 +  math.max(1, env.max_velocity) * self._motion_blur_multiplier)
 
             local new_w = math.ceil((env.max_x - env.min_x) + 2 * padding)
             local new_h = math.ceil((env.max_y - env.min_y) + 2 * padding)
+
+            new_w = math.min(new_w, love.graphics.getWidth())
+            new_h = math.min(new_h, love.graphics.getHeight())
 
             -- reallocate if canvases needs to grow
             if new_w > current_w or new_h > current_h then
@@ -1578,7 +1663,7 @@ do
                     math.max(new_w, current_w),
                     math.max(new_h, current_h),
                     {
-                        msaa = self._settings.canvas_msaa,
+                        msaa = self._canvas_msaa,
                         format = self._render_texture_format
                     }
                 )
@@ -1633,7 +1718,7 @@ do
                 love.graphics.translate(-cx, -cy)
 
                 local particles = env.particles
-                local texture_scale = self._settings.texture_scale
+                local texture_scale = self._texture_scale
                 local texture_w, texture_h = self._particle_texture:getDimensions()
                 for particle_i = 1, env.n_particles do
                     local i = _particle_i_to_data_offset(particle_i)
@@ -1645,12 +1730,12 @@ do
 
                     local velocity_angle = math.atan2(velocity_y, velocity_x)
                     local base_scale = radius * texture_scale
-                    local smear_amount = 1 + math.magnitude(velocity_x, velocity_y) * self._settings.motion_blur_multiplier
+                    local smear_amount = 1 + math.magnitude(velocity_x, velocity_y) * self._motion_blur_multiplier
 
                     local scale_x = base_scale * smear_amount
                     local scale_y = base_scale
 
-                    -- frame interpolation (between last and current whole step)
+                    -- frame interpolation
                     local predicted_x = math.mix(particles[i + _last_update_x_offset], x, t)
                     local predicted_y = math.mix(particles[i + _last_update_y_offset], y, t)
 
@@ -1674,12 +1759,12 @@ do
             end
         else
             draw_particles = function(env, instance_mesh)
-                -- Interpolate centroid to match shader-side particle interpolation
-                local cx = math.mix(env.last_centroid_x or env.centroid_x, env.centroid_x, t)
-                local cy = math.mix(env.last_centroid_y or env.centroid_y, env.centroid_y, t)
+                -- frame interpolation for the centroid
+                local predicted_centroid_x = math.mix(env.last_centroid_x or env.centroid_x, env.centroid_x, t)
+                local predicted_centroid_y = math.mix(env.last_centroid_y or env.centroid_y, env.centroid_y, t)
 
                 love.graphics.push()
-                love.graphics.translate(-cx, -cy)
+                love.graphics.translate(-predicted_centroid_x, -predicted_centroid_y)
                 love.graphics.setColor(1, 1, 1, 1)
                 love.graphics.drawInstanced(instance_mesh, env.n_particles)
                 love.graphics.pop()
@@ -1693,8 +1778,8 @@ do
         if self._use_instancing then
             love.graphics.setShader(self._instanced_draw_shader)
             _safe_send(self._instanced_draw_shader, "interpolation_alpha", t)
-            _safe_send(self._instanced_draw_shader, "smear_multiplier", self._settings.motion_blur_multiplier)
-            _safe_send(self._instanced_draw_shader, "texture_scale", self._settings.texture_scale)
+            _safe_send(self._instanced_draw_shader, "smear_multiplier", self._motion_blur_multiplier)
+            _safe_send(self._instanced_draw_shader, "texture_scale", self._texture_scale)
         else
             love.graphics.setShader(nil)
         end
@@ -1744,13 +1829,13 @@ do
         )
 
         love.graphics.setShader(self._threshold_shader)
-        _safe_send(self._threshold_shader, "threshold", self._settings.threshold_shader_threshold)
-        _safe_send(self._threshold_shader, "smoothness", self._settings.threshold_shader_smoothness)
+        _safe_send(self._threshold_shader, "threshold", self._threshold_shader_threshold)
+        _safe_send(self._threshold_shader, "smoothness", self._threshold_shader_smoothness)
 
         local draw_canvas = function(canvas, env)
             local canvas_width, canvas_height = canvas:getDimensions()
-            local canvas_x, canvas_y = env.centroid_x - 0.5 * canvas_width,
-            env.centroid_y - 0.5 * canvas_height
+            local canvas_x = env.centroid_x - 0.5 * canvas_width
+            local canvas_y = env.centroid_y - 0.5 * canvas_height
             love.graphics.draw(canvas, canvas_x, canvas_y)
         end
 
@@ -1763,7 +1848,7 @@ do
 end
 
 --- @brief [internal] throw error with pretty printing
-function SimulationHandler:_error(is_fatal, ...)
+function SimulationHandler:_throw(is_fatal, ...)
     -- make it so output is flushed to console immediately, because
     -- love.errorhandler does not flush
     io.stdout:setvbuf("no")
@@ -1792,7 +1877,7 @@ function SimulationHandler:_error(is_fatal, ...)
 
     message = table.concat(message, " ") .. "\n"
 
-    -- write to error stream and flush and print to console immediately
+    -- write to error stream and flush
     if is_fatal then
         error(message)
     else
@@ -1801,13 +1886,23 @@ function SimulationHandler:_error(is_fatal, ...)
     end
 end
 
+--- @brief [internal]
+function SimulationHandler:_error(...)
+    return self:_throw(true, ...)
+end
+
+--- @brief [internal]
+function SimulationHandler:_warning(...)
+    return self:_throw(false, ...)
+end
+
 --- @brief [internal] assert function arguments to be of a specific type
 function SimulationHandler:_assert(...)
     local should_exit = true
 
     local n = select("#", ...)
     if n % 2 ~= 0 then
-        self:_error(_FATAL, "In SimulationHandler._assert: number of arguments is not a multiple of 2")
+        self:_error( "In SimulationHandler._assert: number of arguments is not a multiple of 2")
         return should_exit
     end
 
@@ -1815,7 +1910,7 @@ function SimulationHandler:_assert(...)
         local instance = select(i + 0, ...)
         local instance_type = select(i + 1, ...)
         if not type(instance) == instance_type then
-            self:_error(_FATAL, "for argument #", i, ": expected `", instance_type, "`, got `", instance_type, "`")
+            self:_error( "for argument #", i, ": expected `", instance_type, "`, got `", instance_type, "`")
             return should_exit
         end
     end
@@ -1823,9 +1918,9 @@ function SimulationHandler:_assert(...)
     return not should_exit
 end
 
--- return type, invoking the type returns and instance: `local instance = SimulationHandler()`
+-- return type, invoking the type returns an instance: `local instance = SimulationHandler()`
 return setmetatable(SimulationHandler, {
     __call = function(...)
-        return SimulationHandler._new(...)
+        return SimulationHandler.new(...) -- ., not :
     end
 })

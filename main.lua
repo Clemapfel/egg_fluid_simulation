@@ -46,10 +46,10 @@ DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
         end
 
         table.insert(egg_batches, 1, simulation_handler:add(
-            x, y,
-            50, 15,
-            { white_r, white_g, white_b, white_a },
-            { yolk_r, yolk_g, yolk_b, yolk_a }
+            x, y--,
+            --50, 15,
+            --{ white_r, white_g, white_b, white_a },
+            --{ yolk_r, yolk_g, yolk_b, yolk_a }
         ))
     elseif which == "g" then
         local last = egg_batches[1]
