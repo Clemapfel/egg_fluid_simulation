@@ -13,7 +13,6 @@ vec4 effect(vec4 color, sampler2D tex, vec2 texture_coordinates, vec2 frag_posit
     float max_alpha = 0.0;
     float radius = outline_thickness;
 
-    // adaptive step count based on thickness (more samples for thicker outlines)
     int steps = int(ceil(radius)) + 1;
     float step_size = radius / float(steps);
 

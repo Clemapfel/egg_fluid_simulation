@@ -1,22 +1,17 @@
 local prefix = "egg_fluid_simulation" -- path prefix, change this depending on where the library is located
 require(prefix .. ".math")
 
---- @class egg.SimulationHandler
+--- @class SimulationHandler
 local SimulationHandler = {}
 
---[[
-    Egg XPBD Simulation
-
-
-]]--
-
 --- @brief add a new batch to the simulation
---- @overload fun(self: egg.SimulationHandler, x: number, y: number)
 --- @param x number x position, px
 --- @param y number y position, px
 --- @param white_radius number? radius of the egg white, px
 --- @param yolk_radius number? radius of egg yolk, px
---- @return number id of the new batch
+--- @param white_color table? color in rgba format, components in [0, 1]
+--- @param yolk_color table? color in rgba format, components in [0, 1]
+--- @return number integer id of the new batch
 function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yolk_color)
     if white_radius == nil then white_radius = 50 end
     if yolk_radius == nil then
@@ -42,6 +37,29 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
 
     if yolk_radius <= 0 then
         self:_error( "In SimulationHandler.add: yolk radius cannot be 0 or negative")
+    end
+
+    do -- assert color
+        local component_names = { "r", "g", "b", "a" }
+        local which = {
+            white = white_color,
+            yolk = yolk_color
+        }
+
+        for name, color in pairs(which) do
+            for i, component_name in ipairs(component_names) do
+                if type(color[i]) ~= "number" or math.is_nan(color[i]) then
+                    self:_error("In SimulationHandler.add: ", name, " color component `", component_name, "` is not a number")
+                    return
+                end
+
+                if color[i] < 0 or color[i] > 1 then
+                    self:_warning("In SimulationHandler.add: ", name, " color component `", component_name, "` is outside of [0, 1]")
+                end
+
+                color[i] = math.clamp(color[i], 0, 1)
+            end
+        end
     end
 
     local white_area = math.pi * white_radius^2 -- area of a circle = pi * r^2
@@ -93,9 +111,9 @@ function SimulationHandler:draw()
 end
 
 --- @brief update all batches
---- @param step_delta number TODO
---- @param n_substeps number TODO
---- @param n_collision_steps number TODO
+--- @param step_delta number fixed timestep, seconds
+--- @param n_substeps number number of solver iterations per step, integer
+--- @param n_collision_steps number number of collision sub steps per iteration step, integer
 function SimulationHandler:update(delta, step_delta, n_substeps, n_collision_steps)
     if step_delta == nil then step_delta = 1 / 60 end
     if n_substeps == nil then n_substeps = 2 end
@@ -107,6 +125,25 @@ function SimulationHandler:update(delta, step_delta, n_substeps, n_collision_ste
         n_substeps, "number",
         n_collision_steps, "number"
     )
+
+    -- catch floats instead of ints
+    n_substeps = math.ceil(n_substeps)
+    n_collision_steps = math.ceil(n_collision_steps)
+
+    if step_delta < 0 or math.is_nan(step_delta) then
+        self:_error("In SimulationHandler.update: `step_delta` is not a number > 0")
+        return
+    end
+
+    if n_substeps < 1 or math.is_nan(n_substeps) then
+        self:_error("In SimulationHandler.update: `n_substeps` is not a number > 0")
+        return
+    end
+
+    if n_collision_steps < 1 or math.is_nan(n_collision_steps) then
+        self:_error("In SimulationHandler.update: `n_collision_steps` is not a number > 0")
+        return
+    end
 
     -- accumulate delta time, run sim at fixed framerate for better stability
     self._elapsed = self._elapsed + delta
@@ -147,10 +184,17 @@ function SimulationHandler:set_yolk_config(config)
     self:_load_config(config, false) -- egg yolk
 end
 
---- @brief TODO
+--- @brief set outline thickness when drawn
+--- @param white_thickness number factor, > 1, multiplies the default width with this factor
+--- @param yolk_thickness number? factor, > 1
 function SimulationHandler:set_outline_thickness(white_thickness, yolk_thickness)
     if yolk_thickness == nil then yolk_thickness = white_thickness end
     self:_assert(white_thickness, "number", yolk_thickness, "number")
+
+    if white_thickness < 0 or yolk_thickness < 0 then
+        self:_error("In SimulationHandler.set_outline_thickness: thickness cannot be negative")
+        return
+    end
 
     self._white_config.outline_thickness = white_thickness
     self._yolk_config.outline_thickness = yolk_thickness
@@ -169,6 +213,36 @@ function SimulationHandler:set_target_position(batch_id, x, y)
     else
         batch.target_x = x
         batch.target_y = y
+    end
+end
+
+--- @brief get the target position a batch should move to
+--- @return number, number
+function SimulationHandler:get_target_position(batch_id)
+    self:_assert(batch_id, "number")
+
+    local batch = self._batch_id_to_batch[batch_id]
+    if batch == nil then
+        self:_error( "In SimulationHandler.get_target_position: no batch with id `", batch_id, "`")
+        return nil, nil
+    else
+        return batch.target_x, batch.target_y
+    end
+end
+
+--- @brief get average of all particle positions of a batch
+function SimulationHandler:get_position(batch_id)
+    self:_assert(batch_id, "number")
+
+    local batch = self._batch_id_to_batch[batch_id]
+    if batch == nil then
+        self:_error( "In SimulationHandler.get_target_position: no batch with id `", batch_id, "`")
+        return nil, nil
+    else
+        local white_x, white_y = self._last_white_env.centroid_x, self._last_white_env.centroid_y
+        local yolk_x, yolk_y = self._last_yolk_env.centroid_x, self._last_yolk_env.centroid_y
+        -- mean of centroids is mean of all yolk + white particles
+        return math.mix(white_x, white_y, yolk_x, yolk_y, 0.5)
     end
 end
 
@@ -210,11 +284,11 @@ do
         self:_assert(batch_id, "number")
         r, g, b, a = _assert_color("set_egg_yolk_color", r, g, b, a)
 
-        local darkening = self._outline_color_darkening
-        if outline_r == nil then outline_r = r * darkening end
-        if outline_g == nil then outline_g = g * darkening end
-        if outline_b == nil then outline_b = b * darkening end
-        if outline_a == nil then outline_a = a end
+        local config = self._yolk_config
+        if outline_r == nil then outline_r = config.outline_color[1] end
+        if outline_g == nil then outline_g = config.outline_color[2] end
+        if outline_b == nil then outline_b = config.outline_color[3] end
+        if outline_a == nil then outline_a = config.outline_color[4] end
 
         outline_r, outline_g, outline_b, outline_a = _assert_color("set_white_color",
             outline_r, outline_g, outline_b, outline_a
@@ -247,11 +321,11 @@ do
         self:_assert(batch_id, "number")
         r, g, b, a = _assert_color("set_white_color", r, g, b, a)
 
-        local darkening = self._outline_color_darkening
-        if outline_r == nil then outline_r = r * darkening end
-        if outline_g == nil then outline_g = g * darkening end
-        if outline_b == nil then outline_b = b * darkening end
-        if outline_a == nil then outline_a = a end
+        local config = self._yolk_config
+        if outline_r == nil then outline_r = config.outline_color[1] end
+        if outline_g == nil then outline_g = config.outline_color[2] end
+        if outline_b == nil then outline_b = config.outline_color[3] end
+        if outline_a == nil then outline_a = config.outline_color[4] end
 
         outline_r, outline_g, outline_b, outline_a = _assert_color("set_white_color",
             outline_r, outline_g, outline_b, outline_a
@@ -272,25 +346,6 @@ do
     end
 end
 
---- @brief TODO
-function SimulationHandler:set_motion_blur(velocity_factor)
-    self:_assert(velocity_factor, "number")
-    if velocity_factor < 0 then
-        self:_error( "In SimulationHandler.set_motion_blur: value cannot be negative")
-    end
-
-    self._motion_blur_multiplier = velocity_factor
-end
-
---- @brief
-function SimulationHandler:set_particle_texture_scale(scale)
-    if scale < 0 then
-        self:_error( "In SimulationHandler.set_particle_texture_scale: value cannot be negative")
-    end
-
-    self._texture_scale = scale
-end
-
 --- @brief list the ids of all batches
 --- @return number[] array of batch ids
 function SimulationHandler:list_ids()
@@ -302,6 +357,7 @@ function SimulationHandler:list_ids()
 end
 
 --- @brief create a new simulation handler instance. Usually this function is not called directly, use `instance = SimulationHandler()` instead
+--- @return SimulationHandler
 function SimulationHandler.new()
     -- sic, no :, self is returned instance, not type
     local self = setmetatable({}, {
@@ -312,9 +368,12 @@ function SimulationHandler.new()
     local outline_thickness = 1
     local particle_radius = 4
     local base_damping = 0.1
+    local texture_scale = 12
+
+    -- see README.md for a description of the parameters below
 
     self._white_config = {
-        -- mutable properties, apply to the next `update` call
+        -- dynamic
         damping = base_damping,
 
         follow_strength = 1 - 0.004,
@@ -329,19 +388,22 @@ function SimulationHandler.new()
         outline_color = { 0.973, 0.796, 0.529, 1 },
         outline_thickness = outline_thickness,
 
-        lighting_use_highlight = false,
-        lighting_use_shadow = true,
+        highlight_strength = 0,
+        shadow_strength = 1,
 
-        -- static properties, only apply for `add` after they were set, they do not apply to old batches
+        -- static
         min_mass = 1,
         max_mass = 1.8,
 
         min_radius = particle_radius,
-        max_radius = particle_radius
+        max_radius = particle_radius,
+
+        texture_scale = texture_scale,
+        motion_blur = 0.0003,
     }
 
     self._yolk_config = {
-        -- mutable
+        -- dynamic
         damping = base_damping ,
 
         follow_strength = 1 - 0.004,
@@ -356,19 +418,19 @@ function SimulationHandler.new()
         outline_color = { 0.984, 0.522, 0.271, 1 },
         outline_thickness = outline_thickness,
 
-        lighting_use_highlight = true,
-        lighting_use_shadow = false,
+        highlight_strength = 1,
+        shadow_strength = 0,
 
         -- static
         min_mass = 1,
         max_mass = 1.35,
 
         min_radius = particle_radius,
-        max_radius = particle_radius
-    }
+        max_radius = particle_radius,
 
-    self._motion_blur_multiplier = 0.0005 -- scale per px/s, factor of velocity magnitude
-    self._texture_scale = 12 -- fraction, > 1
+        texture_scale = texture_scale,
+        motion_blur = 0.0005
+    }
 
     -- immutable properties
     self._particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl"
@@ -378,13 +440,12 @@ function SimulationHandler.new()
 
     self._thresholding_threshold = 0.3 -- in [0, 1]
     self._thresholding_smoothness = 0.01 -- in [0, threshold_shader_threshold)
-    self._outline_color_darkening = 0.25 -- in [0, 1], multiplies color.rgb
 
     self._mass_distribution_variance = 4 -- unitless, (2 * n) with n >= 1
     self._max_collision_fraction = 0.05 -- fraction
     self._particle_density = 1 / 128 -- particles per px^2
     self._use_particle_color = false -- whether particle rgb should be accumulated for the final image
-    self._use_lighting = true
+    self._use_lighting = true -- whether specular highlight and shadows should be drawn
 
     -- render texture config
     self._canvas_msaa = 4 -- msaa for render textures
@@ -499,6 +560,9 @@ function SimulationHandler:_reinitialize()
 
         self._render_texture_format = texture_format
     end
+
+    -- step once to init environments
+    self:_step(0, 1, 1)
 end
 
 --- @brief [internal] load and compile necessary shaders
@@ -512,6 +576,7 @@ function SimulationHandler:_initialize_shaders()
 
         if not success then
             self:_error( "In SimulationHandler._initialize_shader: unable to create shader at `", path, "`: ", shader_or_error)
+            return
         else
             return shader_or_error
         end
@@ -1071,11 +1136,17 @@ do
     local _valid_config_key_to_type = {
         damping = "number",
         color = "table",
+        outline_color = "table",
+        outline_thickness = "number",
         collision_strength = "number",
         collision_overlap_factor = "number",
         cohesion_strength = "number",
         cohesion_interaction_distance_factor = "number",
         follow_strength = "number",
+        min_radius = "number",
+        max_radius = "number",
+        min_mass = "number",
+        max_mass = "number"
     }
 
     --- @brief [internal] override config setting
@@ -1093,7 +1164,7 @@ do
             end
 
             if value_type == "number" then
-                if value ~= value then -- is NaN
+                if math.is_nan(value) then
                     self:_warning( "In SimulationHandler._load_config: value for key `", key, "` is NaN. It will be ignored")
                     is_valid = false
                 elseif value == math.huge or value == -math.huge then
@@ -1115,7 +1186,7 @@ end
 
 -- ### STEP HELPERS ### --
 do
-    -- table.clear, fallback implementations for non luajit
+    -- table.clear, fallback implementations for non-luajit
     pcall(require, "table.clear")
     if not table.clear then
         function table.clear(t)
@@ -1328,7 +1399,6 @@ do
         max_n_collisions
     )
         local n_collided = 0
-
         for self_particle_i = 1, n_particles do
             local self_i = _particle_i_to_data_offset(self_particle_i)
             local self_x_i = self_i + _x_offset
@@ -1388,7 +1458,7 @@ do
                                 interaction_distance = cohesion_interaction_distance_factor * (self_radius + other_radius)
                             end
 
-                            if self_batch_id ~= other_batch_id and
+                            if self_batch_id == other_batch_id and
                                 math.squared_distance(self_x, self_y, other_x, other_y) <= interaction_distance^2
                             then
                                 local self_correction_x, self_correction_y,
@@ -1495,13 +1565,16 @@ do
 
     --- @brief [internal] step the simulation
     function SimulationHandler:_step(delta, n_sub_steps, n_collision_steps)
-        local sub_delta = delta / n_sub_steps
+        local sub_delta = math.max(delta / n_sub_steps, math.eps)
 
         -- setup environments for yolk / white separately
         local function update_environment(old_env, config, particles, n_particles)
             local env = _create_environment(old_env)
             env.particles = particles
             env.n_particles = n_particles
+
+            env.texture_scale = config.texture_scale
+            env.motion_blur = config.motion_blur
 
             -- collision budget, limit maximum number of collisions processed per step
             -- this is to guard against all particles being so close together that the
@@ -1687,8 +1760,8 @@ do
             end
 
             -- compute canvas padding
-            local padding = env.max_radius * self._texture_scale
-                * (1 +  math.max(1, env.max_velocity) * self._motion_blur_multiplier)
+            local padding = env.max_radius * env.texture_scale
+                * (1 +  math.max(1, env.max_velocity) * env.motion_blur)
 
             local new_w = math.ceil((env.max_x - env.min_x) + 2 * padding)
             local new_h = math.ceil((env.max_y - env.min_y) + 2 * padding)
@@ -1757,7 +1830,7 @@ do
                 love.graphics.translate(-cx, -cy)
 
                 local particles = env.particles
-                local texture_scale = self._texture_scale
+                local texture_scale = env.texture_scale
                 local texture_w, texture_h = self._particle_texture:getDimensions()
                 for particle_i = 1, env.n_particles do
                     local i = _particle_i_to_data_offset(particle_i)
@@ -1769,7 +1842,7 @@ do
 
                     local velocity_angle = math.atan2(velocity_y, velocity_x)
                     local base_scale = radius * texture_scale
-                    local smear_amount = 1 + math.magnitude(velocity_x, velocity_y) * self._motion_blur_multiplier
+                    local smear_amount = 1 + math.magnitude(velocity_x, velocity_y) * env.motion_blur
 
                     local scale_x = base_scale * smear_amount
                     local scale_y = base_scale
@@ -1817,8 +1890,6 @@ do
         if self._use_instancing then
             love.graphics.setShader(self._instanced_draw_shader)
             _send(self._instanced_draw_shader, "interpolation_alpha", t)
-            _send(self._instanced_draw_shader, "smear_multiplier", self._motion_blur_multiplier)
-            _send(self._instanced_draw_shader, "texture_scale", self._texture_scale)
         else
             love.graphics.setShader(nil)
         end
@@ -1826,6 +1897,10 @@ do
         do -- egg white
             local canvas = self._white_canvas
             local canvas_width, canvas_height = canvas:getDimensions()
+            local env = self._last_white_env
+            _send(self._instanced_draw_shader, "motion_blur", env.motion_blur)
+            _send(self._instanced_draw_shader, "texture_scale", env.texture_scale)
+
             love.graphics.setCanvas(canvas)
             love.graphics.clear(0, 0, 0, 0)
 
@@ -1838,6 +1913,10 @@ do
         do -- egg yolk
             local canvas = self._yolk_canvas
             local canvas_width, canvas_height = canvas:getDimensions()
+            local env = self._last_yolk_env
+            _send(self._instanced_draw_shader, "motion_blur", env.motion_blur)
+            _send(self._instanced_draw_shader, "texture_scale", env.texture_scale)
+
             love.graphics.setCanvas(canvas)
             love.graphics.clear(0, 0, 0, 0)
 
@@ -1886,8 +1965,17 @@ do
             end
 
             love.graphics.setShader(self._lighting_shader)
-            _send(self._lighting_shader, "use_highlight", config.lighting_use_highlight)
-            _send(self._lighting_shader, "use_shadow", config.lighting_use_shadow)
+
+            _send(self._lighting_shader, "highlight_strength", config.highlight_strength)
+            _send(self._lighting_shader, "use_highlight",
+                config.highlight_strength > 0 and self._use_lighting
+            )
+
+            _send(self._lighting_shader, "shadow_strength", config.shadow_strength)
+            _send(self._lighting_shader, "use_shadow",
+                config.shadow_strength > 0 and self._use_lighting
+            )
+
             love.graphics.draw(canvas, canvas_x, canvas_y)
 
             love.graphics.setShader(nil)

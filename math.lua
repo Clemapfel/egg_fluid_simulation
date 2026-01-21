@@ -99,3 +99,14 @@ function math.squared_distance(x1, y1, x2, y2)
     return math.dot(dx, dy, dx, dy)
 end
 
+--- @brief check if an object is NaN
+--- @return boolean
+function math.is_nan(x)
+    return x ~= x
+end
+
+--- @brief get remainder of x fmod 1
+function math.fract(x)
+    return x - math.floor(x)
+end
+

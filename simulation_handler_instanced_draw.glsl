@@ -8,7 +8,7 @@ layout (location = 5) in float particle_radius;
 layout (location = 6) in vec4 particle_color;
 
 uniform float interpolation_alpha;
-uniform float smear_multiplier;
+uniform float motion_blur;
 uniform float texture_scale;
 
 varying vec4 color_override;
@@ -24,7 +24,7 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
     float velocity_angle = atan(particle_velocity.y, particle_velocity.x);
 
     float base_scale = particle_radius * texture_scale;
-    float smear_amount = 1.0 + length(particle_velocity) * smear_multiplier;
+    float smear_amount = 1.0 + length(particle_velocity) * motion_blur;
 
     vec2 scale = vec2(base_scale * smear_amount, base_scale);
     float cos_angle = cos(velocity_angle);
