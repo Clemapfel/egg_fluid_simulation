@@ -34,6 +34,18 @@ function math.mix(lower, upper, ratio)
     return lower * (1 - ratio) + upper * ratio
 end
 
+--- @brief linearly interpolate between two points
+--- @param x1 number x coordinate of first point
+--- @param y1 number y coordinate of second point
+--- @param x2 number x coordinate of first point
+--- @param y2 number y coordinate of second point
+--- @param ratio number blend factor, in [0,1]
+--- @return number, number
+function math.mix2(x1, y1, x2, y2, ratio)
+    return x1 * (1 - ratio) + x2 * ratio,
+        y1 * (1 - ratio) + y2 * ratio
+end
+
 --- @brief normalize a 2D vector, handles division by 0
 --- @param x number x component
 --- @param y number y component
@@ -106,7 +118,20 @@ function math.is_nan(x)
 end
 
 --- @brief get remainder of x fmod 1
+--- @param x number
+--- @return number
 function math.fract(x)
     return x - math.floor(x)
 end
+
+--- @brief wrap an index to always be inside 1, n
+--- @param index number index to wrap
+--- @param n_elements number number of elements
+--- @return number
+function math.wrap(index, n_elements)
+    if n_elements == 0 then return index end
+    return ((index - 1) % n_elements) + 1
+end
+
+table.deepcopy()
 

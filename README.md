@@ -211,7 +211,7 @@ Like `step_delta`, `n_sub_steps` is an optional argument of `update`
 handler:update(
     delta,  -- variable delta time
     1 / 60, -- fixed time step
-    3       -- n sub steps
+    2       -- n sub steps
 )
 ```
 
@@ -274,6 +274,19 @@ handler:set_yolk_color(
     1, 0.9, 1, 1,        -- base color
     0.33, 0.25, 0.33, 1 -- outline color
 )
+```
+
+### Outline Thickness
+
+Type: dynamic
+Unit: factor, >= 0
+
+Multiplies the default outline thickness by this factor, meaning 2 makes the outline twice as thick, 0.5 half as thick. A value of 0 will prevent outlines from being drawn. 
+
+```lua
+handler:set_white_config({
+    outline_thickness = 1
+})
 ```
 
 ### Shadows, Highlights

@@ -1,8 +1,14 @@
 local prefix = "egg_fluid_simulation" -- path prefix, change this depending on where the library is located
 require(prefix .. ".math")
+local log = require(prefix .. ".log")
 
 --- @class SimulationHandler
 local SimulationHandler = {}
+setmetatable(SimulationHandler, {
+    __call = function(...)
+        return SimulationHandler.new(...)
+    end
+})
 
 --- @brief add a new batch to the simulation
 --- @param x number x position, px
@@ -22,7 +28,7 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
     white_color = white_color or self._white_config.color
     yolk_color = yolk_color or self._yolk_config.color
 
-    self:_assert(
+    log.assert(
         x, "number",
         y, "number",
         white_radius, "number",
@@ -32,11 +38,11 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
     )
     
     if white_radius <= 0 then 
-        self:_error( "In SimulationHandler.add: white radius cannot be 0 or negative")
+        log.error( "In SimulationHandler.add: white radius cannot be 0 or negative")
     end
 
     if yolk_radius <= 0 then
-        self:_error( "In SimulationHandler.add: yolk radius cannot be 0 or negative")
+        log.error( "In SimulationHandler.add: yolk radius cannot be 0 or negative")
     end
 
     do -- assert color
@@ -49,12 +55,12 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
         for name, color in pairs(which) do
             for i, component_name in ipairs(component_names) do
                 if type(color[i]) ~= "number" or math.is_nan(color[i]) then
-                    self:_error("In SimulationHandler.add: ", name, " color component `", component_name, "` is not a number")
+                    log.error("In SimulationHandler.add: ", name, " color component `", component_name, "` is not a number")
                     return
                 end
 
                 if color[i] < 0 or color[i] > 1 then
-                    self:_warning("In SimulationHandler.add: ", name, " color component `", component_name, "` is outside of [0, 1]")
+                    log.warning("In SimulationHandler.add: ", name, " color component `", component_name, "` is outside of [0, 1]")
                 end
 
                 color[i] = math.clamp(color[i], 0, 1)
@@ -87,11 +93,11 @@ end
 --- @param batch_id number id of the batch to remove, acquired from SimulationHandler.add
 --- @return nil
 function SimulationHandler:remove(batch_id)
-    self:_assert(batch_id, "number")
+    log.assert(batch_id, "number")
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_warning("In SimulationHandler.remove: no batch with id `", batch_id, "`")
+        log.warning("In SimulationHandler.remove: no batch with id `", batch_id, "`")
         return
     end
 
@@ -119,7 +125,7 @@ function SimulationHandler:update(delta, step_delta, n_substeps, n_collision_ste
     if n_substeps == nil then n_substeps = 2 end
     if n_collision_steps == nil then n_collision_steps = 3 end
 
-    self:_assert(
+    log.assert(
         delta, "number",
         step_delta, "number",
         n_substeps, "number",
@@ -131,17 +137,17 @@ function SimulationHandler:update(delta, step_delta, n_substeps, n_collision_ste
     n_collision_steps = math.ceil(n_collision_steps)
 
     if step_delta < 0 or math.is_nan(step_delta) then
-        self:_error("In SimulationHandler.update: `step_delta` is not a number > 0")
+        log.error("In SimulationHandler.update: `step_delta` is not a number > 0")
         return
     end
 
     if n_substeps < 1 or math.is_nan(n_substeps) then
-        self:_error("In SimulationHandler.update: `n_substeps` is not a number > 0")
+        log.error("In SimulationHandler.update: `n_substeps` is not a number > 0")
         return
     end
 
     if n_collision_steps < 1 or math.is_nan(n_collision_steps) then
-        self:_error("In SimulationHandler.update: `n_collision_steps` is not a number > 0")
+        log.error("In SimulationHandler.update: `n_collision_steps` is not a number > 0")
         return
     end
 
@@ -173,31 +179,27 @@ end
 --- @brief update the mutable simulation parameters for the white
 --- @param config table table of properties, see the readme for a list of valid properties
 function SimulationHandler:set_white_config(config)
-    self:_assert(config, "table")
+    log.assert(config, "table")
     self:_load_config(config, true) -- egg white
 end
 
 --- @brief update the mutable simulation parameters for the yolk
 --- @param config table table of properties, see the readme for a list of valid properties
 function SimulationHandler:set_yolk_config(config)
-    self:_assert(config, "table")
+    log.assert(config, "table")
     self:_load_config(config, false) -- egg yolk
 end
 
---- @brief set outline thickness when drawn
---- @param white_thickness number factor, > 1, multiplies the default width with this factor
---- @param yolk_thickness number? factor, > 1
-function SimulationHandler:set_outline_thickness(white_thickness, yolk_thickness)
-    if yolk_thickness == nil then yolk_thickness = white_thickness end
-    self:_assert(white_thickness, "number", yolk_thickness, "number")
+--- @brief get current config for the white, contains all keys
+--- @return table read-only, writing to this table will not affect the handler
+function SimulationHandler:get_white_config()
+    return self:_deepcopy(self._white_config)
+end
 
-    if white_thickness < 0 or yolk_thickness < 0 then
-        self:_error("In SimulationHandler.set_outline_thickness: thickness cannot be negative")
-        return
-    end
-
-    self._white_config.outline_thickness = white_thickness
-    self._yolk_config.outline_thickness = yolk_thickness
+--- @brief get current config for the white, contains all keys
+--- @return table read-only, writing to this table will not affect the handler
+function SimulationHandler:get_yolk_config()
+    return self:_deepcopy(self._yolk_config)
 end
 
 --- @brief set the target position a batch should move to
@@ -205,11 +207,11 @@ end
 --- @param x number x coordinate, in px
 --- @param y number y coordinate, in px
 function SimulationHandler:set_target_position(batch_id, x, y)
-    self:_assert(batch_id, "number", x, "number", y, "number")
+    log.assert(batch_id, "number", x, "number", y, "number")
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_warning( "In SimulationHandler.set_target_position: no batch with id `", batch_id, "`")
+        log.warning( "In SimulationHandler.set_target_position: no batch with id `", batch_id, "`")
     else
         batch.target_x = x
         batch.target_y = y
@@ -219,11 +221,11 @@ end
 --- @brief get the target position a batch should move to
 --- @return number, number
 function SimulationHandler:get_target_position(batch_id)
-    self:_assert(batch_id, "number")
+    log.assert(batch_id, "number")
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_error( "In SimulationHandler.get_target_position: no batch with id `", batch_id, "`")
+        log.error( "In SimulationHandler.get_target_position: no batch with id `", batch_id, "`")
         return nil, nil
     else
         return batch.target_x, batch.target_y
@@ -232,17 +234,18 @@ end
 
 --- @brief get average of all particle positions of a batch
 function SimulationHandler:get_position(batch_id)
-    self:_assert(batch_id, "number")
+    log.assert(batch_id, "number")
 
     local batch = self._batch_id_to_batch[batch_id]
     if batch == nil then
-        self:_error( "In SimulationHandler.get_target_position: no batch with id `", batch_id, "`")
+        log.error( "In SimulationHandler.get_target_position: no batch with id `", batch_id, "`")
         return nil, nil
     else
-        local white_x, white_y = self._last_white_env.centroid_x, self._last_white_env.centroid_y
-        local yolk_x, yolk_y = self._last_yolk_env.centroid_x, self._last_yolk_env.centroid_y
-        -- mean of centroids is mean of all yolk + white particles
-        return math.mix(white_x, white_y, yolk_x, yolk_y, 0.5)
+        if batch.centroid_needs_update then
+            self:_update_batch_centroid(batch)
+        end
+
+        return batch.centroid_x, batch.centroid_y
     end
 end
 
@@ -251,7 +254,7 @@ do
     local _assert_color = function(scope, r, g, b, a)
         if a == nil then a = 1 end
 
-        self:_assert(
+        log.assert(
             r, "number",
             g, "number",
             b, "number",
@@ -262,7 +265,7 @@ do
             or b > 1 or b < 0
             or a > 1 or a < 0
         then
-            self:_warning( "In SimulationHandler.", scope, ": color component is outside of [0, 1]")
+            log.warning( "In SimulationHandler.", scope, ": color component is outside of [0, 1]")
         end
 
         return math.clamp(r, 0, 1),
@@ -281,7 +284,7 @@ do
         r, g, b, a,
         outline_r, outline_g, outline_b, outline_a
     )
-        self:_assert(batch_id, "number")
+        log.assert(batch_id, "number")
         r, g, b, a = _assert_color("set_egg_yolk_color", r, g, b, a)
 
         local config = self._yolk_config
@@ -296,7 +299,7 @@ do
 
         local batch = self._batch_id_to_batch[batch_id]
         if batch == nil then
-            self:_warning( "In SimulationHandler.set_egg_yolk_color: no batch with id `", batch_id, "`")
+            log.warning( "In SimulationHandler.set_egg_yolk_color: no batch with id `", batch_id, "`")
         else
             local color = batch.yolk_color
             color[1], color[2], color[3], color[4] = r, g, b, a
@@ -318,10 +321,10 @@ do
         r, g, b, a,
         outline_r, outline_g, outline_b, outline_a
     )
-        self:_assert(batch_id, "number")
+        log.assert(batch_id, "number")
         r, g, b, a = _assert_color("set_white_color", r, g, b, a)
 
-        local config = self._yolk_config
+        local config = self._white_config
         if outline_r == nil then outline_r = config.outline_color[1] end
         if outline_g == nil then outline_g = config.outline_color[2] end
         if outline_b == nil then outline_b = config.outline_color[3] end
@@ -333,7 +336,7 @@ do
 
         local batch = self._batch_id_to_batch[batch_id]
         if batch == nil then
-            self:_warning( "In SimulationHandler.set_white_color: no batch with id `", batch_id, "`")
+            log.warning( "In SimulationHandler.set_white_color: no batch with id `", batch_id, "`")
         else
             local color = batch.white_color
             color[1], color[2], color[3], color[4] = r, g, b, a
@@ -356,19 +359,34 @@ function SimulationHandler:list_ids()
     return ids
 end
 
+--- @brief get total number of particles
+--- @return number
+function SimulationHandler:get_n_particles(batch_or_nil)
+    if batch_or_nil == nil then
+        return self._total_n_white_particles + self._total_n_yolk_particles
+    else
+        local batch = self._batch_id_to_batch[batch_or_nil]
+        if batch == nil then
+            log.error("In SimulationHandler:get_n_particles: no batch with id `", batch_or_nil, "`")
+        end
+        return batch.n_white_particles + batch.n_yolk_particles
+    end
+end
+
+local _type_metatable = { __index = SimulationHandler }
+
 --- @brief create a new simulation handler instance. Usually this function is not called directly, use `instance = SimulationHandler()` instead
 --- @return SimulationHandler
 function SimulationHandler.new()
     -- sic, no :, self is returned instance, not type
-    local self = setmetatable({}, {
-        __index = SimulationHandler
-    })
+    local self = setmetatable({}, _type_metatable)
 
     -- default white / yolk configs
     local outline_thickness = 1
     local particle_radius = 4
     local base_damping = 0.1
     local texture_scale = 12
+    local base_mass = 1
 
     -- see README.md for a description of the parameters below
 
@@ -392,8 +410,8 @@ function SimulationHandler.new()
         shadow_strength = 1,
 
         -- static
-        min_mass = 1,
-        max_mass = 1.8,
+        min_mass = base_mass,
+        max_mass = base_mass * 1.8,
 
         min_radius = particle_radius,
         max_radius = particle_radius,
@@ -422,14 +440,14 @@ function SimulationHandler.new()
         shadow_strength = 0,
 
         -- static
-        min_mass = 1,
-        max_mass = 1.35,
+        min_mass = base_mass,
+        max_mass = base_mass * 1.35,
 
         min_radius = particle_radius,
         max_radius = particle_radius,
 
         texture_scale = texture_scale,
-        motion_blur = 0.0005
+        motion_blur = 0.0003
     }
 
     -- immutable properties
@@ -461,10 +479,11 @@ end
 --- @brief [internal] clear the simulation, useful for debugging
 function SimulationHandler:_reinitialize()
     -- internal properties
-    self._batch_id_to_batch = {}
+    self._batch_id_to_batch = {} -- Table<Number, Batch>
     self._current_batch_id = 1
     self._n_batches = 0
 
+    -- particle properties are stored inline
     self._white_data = {}
     self._total_n_white_particles = 0
 
@@ -478,7 +497,6 @@ function SimulationHandler:_reinitialize()
     self._yolk_color_data_mesh_data = {}
 
     self._max_radius = 1
-    
     self._canvases_need_update = false
     
     self._elapsed = 0
@@ -487,6 +505,7 @@ function SimulationHandler:_reinitialize()
     self:_initialize_shaders()
     self:_initialize_particle_texture()
 
+    -- instancing is unavailable on certain GL EES
     local supported = love.graphics.getSupported()
     self._use_instancing = supported.instancing == true
         and (supported.glsl3 == true or supported.glsl4 == true)
@@ -497,32 +516,29 @@ function SimulationHandler:_reinitialize()
         local radius_name = "particle_radius"
         local color_name = "particle_color"
 
-        if love.getVersion() < 12 then
+        assert(love.getVersion() >= 12, "Love v12.0 or later required, mesh data format is incompatible with earlier versions")
+
+        do
+            -- default love mesh format
+            -- location = 0: VertexPosition
+            -- location = 1: VertexTexCoord
+            -- location = 2: VertexColor
+
+            local i = 2
             self._data_mesh_format = {
-                { position_name, "float", 4 },
-                { velocity_name, "float", 2 },
-                { radius_name, "float", 1 }
+                { location = i+1, name = position_name, format = "floatvec4" }, -- xy: position, zw: previous position
+                { location = i+2, name = velocity_name, format = "floatvec2" },
+                { location = i+3, name = radius_name, format = "float" },
             }
 
+            -- data and color mesh are separate, as only the data mesh changes every
+            -- frame, uploading the same color every frame to vram is suboptimal
             self._color_mesh_format = {
-                { color_name, "float", 4 }
-            }
-        else
-            self._data_mesh_format = {
-                { location = 3, name = position_name, format = "floatvec4" }, -- xy: position, zw: previous position
-                { location = 4, name = velocity_name, format = "floatvec2" },
-                { location = 5, name = radius_name, format = "float" },
-            }
-
-            self._color_mesh_format = {
-                { location = 6, name = color_name, format = "floatvec4" }
+                { location = i+4, name = color_name, format = "floatvec4" }
             }
         end
 
         self:_initialize_instance_mesh()
-
-        -- data and color mesh are separate, as only the data mesh changes every
-        -- frame, uploading the same color every frame to vram is suboptimal
 
         if self._use_instancing then
             self:_update_data_mesh()
@@ -538,19 +554,15 @@ function SimulationHandler:_reinitialize()
 
     do -- texture format needs to have non [0, 1] range, find first available on this machine
         local available_formats
-        if love.getVersion() >= 12 then
-            available_formats = love.graphics.getTextureFormats({
-                canvas = true
-            })
-        else
-            available_formats = love.graphics.getCanvasFormats()
-        end
+        available_formats = love.graphics.getTextureFormats({
+            canvas = true
+        })
 
         local texture_format = nil
         for _, format in ipairs({
+            "rgba8",
             "rgba16f",
             "rgba32f",
-            "rgba8"
         }) do
             if available_formats[format] == true then
                 texture_format = format
@@ -575,7 +587,7 @@ function SimulationHandler:_initialize_shaders()
         )
 
         if not success then
-            self:_error( "In SimulationHandler._initialize_shader: unable to create shader at `", path, "`: ", shader_or_error)
+            log.error( "In SimulationHandler._initialize_shader: unable to create shader at `", path, "`: ", shader_or_error)
             return
         else
             return shader_or_error
@@ -584,16 +596,9 @@ function SimulationHandler:_initialize_shaders()
 
     self._particle_texture_shader = new_shader(self._particle_texture_shader_path)
     self._outline_shader = new_shader(self._outline_shader_path)
-    self._instanced_draw_shader = new_shader(self._instanced_draw_shader_path)
     self._lighting_shader = new_shader(self._lighting_shader_path)
 
-    DEBUG_INPUT:signal_connect("keyboard_key_pressed", function(_, which)
-        if which == "l" then
-            self._lighting_shader = new_shader(self._lighting_shader_path)
-            self._outline_shader = new_shader(self._outline_shader_path)
-            dbg("called")
-        end
-    end)
+    self._instanced_draw_shader = new_shader(self._instanced_draw_shader_path)
 
     -- on vulkan, first use of a shader would cause stutter, so force use here, equivalent to precompiling the shader
     if love.getVersion() >= 12 and love.graphics.getRendererInfo() == "Vulkan" then
@@ -602,7 +607,7 @@ function SimulationHandler:_initialize_shaders()
         love.graphics.setCanvas(texture)
         for _, shader in ipairs({
             self._particle_texture_shader,
-            self._threshold_shader,
+            self._lighting_shader,
             self._outline_shader
         }) do
             love.graphics.setShader(shader)
@@ -705,6 +710,8 @@ function SimulationHandler:_initialize_instance_mesh()
     self._yolk_instance_mesh = new()
 end
 
+
+-- particle properties are stored inline, these are the offset
 local _x_offset = 0  -- x position, px
 local _y_offset = 1  -- y position, px
 local _z_offset = 2  -- render priority
@@ -774,20 +781,15 @@ function SimulationHandler:_update_data_mesh()
             )
 
             -- attach for rendering
-            if love.getVersion() >= 12 then
-                for _, entry in ipairs(self._data_mesh_format) do
-                    instance_mesh:attachAttribute(entry.name, data_mesh, "perinstance")
-                end
-            else
-                for i, entry in ipairs(self._data_mesh_format) do
-                    instance_mesh:attachAttribute(entry[i], data_mesh, "perinstance")
-                end
+            for _, entry in ipairs(self._data_mesh_format) do
+                instance_mesh:attachAttribute(entry.name, data_mesh, "perinstance")
             end
 
             return data_mesh
         else
             -- else upload vertex data
             mesh:setVertices(mesh_data)
+            mesh:flush()
             return mesh
         end
     end
@@ -809,8 +811,7 @@ function SimulationHandler:_update_data_mesh()
     )
 end
 
---- @brief [internal]
---- @brief [internal]
+--- @brief [internal] upload color mesh data for instanced drawing
 function SimulationHandler:_update_color_mesh()
     local function update_color_mesh(particles, n_particles, instance_mesh, mesh_data, mesh)
         if n_particles == 0 then return nil end
@@ -844,19 +845,14 @@ function SimulationHandler:_update_color_mesh()
                 "stream"
             )
 
-            if love.getVersion() >= 12 then
-                for _, entry in ipairs(self._color_mesh_format) do
-                    instance_mesh:attachAttribute(entry.name, color_data_mesh, "perinstance")
-                end
-            else
-                for i, entry in ipairs(self._color_mesh_format) do
-                    instance_mesh:attachAttribute(entry[i], color_data_mesh, "perinstance")
-                end
+            for _, entry in ipairs(self._color_mesh_format) do
+                instance_mesh:attachAttribute(entry.name, color_data_mesh, "perinstance")
             end
 
             return color_data_mesh
         else
             mesh:setVertices(mesh_data)
+            mesh:flush()
             return mesh
         end
     end
@@ -892,7 +888,10 @@ function SimulationHandler:_new_batch(
         white_color = white_color,
         yolk_color = yolk_color,
         target_x = center_x,
-        target_y = center_y
+        target_y = center_y,
+        centroid_x = center_x,
+        centroid_y = center_y,
+        centroid_needs_update = true
     }
 
     -- generate uniformly distributed value in interval
@@ -1083,19 +1082,20 @@ function SimulationHandler:_remove(white_indices, yolk_indices)
         -- update only affected batches
         for _, batch in pairs(self._batch_id_to_batch) do
             local list = batch[list_name]
-            if list then
-                local n = #list
-                local w = 1
-                for r = 1, n do
-                    local old_base = list[r]
-                    local old_p = math.floor((old_base - 1) / stride) + 1
-                    local new_p = new_index[old_p]
-                    if new_p then
-                        list[w] = (new_p - 1) * stride + 1
-                        w = w + 1
+            if list ~= nil then
+                local old_count = #list
+                local write_pos = 1
+                for read_pos = 1, old_count do
+                    local old_base_index = list[read_pos]
+                    local old_particle_id = math.floor((old_base_index - 1) / stride) + 1
+                    local new_particle_id = new_index[old_particle_id]
+                    if new_particle_id then
+                        list[write_pos] = (new_particle_id - 1) * stride + 1
+                        write_pos = write_pos + 1
                     end
                 end
-                for i = w, n do list[i] = nil end
+
+                for i = write_pos, old_count do list[i] = nil end
             end
         end
     end
@@ -1109,7 +1109,7 @@ function SimulationHandler:_remove(white_indices, yolk_indices)
     end
 end
 
---- @brief [internal]
+--- @brief [internal] write new color for all particles
 function SimulationHandler:_update_particle_color(batch, yolk_or_white)
     local particles, indices, color
     if yolk_or_white == true then
@@ -1132,7 +1132,27 @@ function SimulationHandler:_update_particle_color(batch, yolk_or_white)
     end
 end
 
+--- @brief [internal] recompute batch centroid
+function SimulationHandler:_update_batch_centroid(batch)
+    local x, y = 0, 0
+    for _, particle_i in ipairs(batch.white_particle_indices) do
+        local i = _particle_i_to_data_offset(particle_i)
+        x = x + self._white_data[i + _x_offset]
+        y = y + self._white_data[i + _y_offset]
+    end
+
+    for _, particle_i in ipairs(batch.yolk_particle_indices) do
+        local i = _particle_i_to_data_offset(particle_i)
+        x = x + self._yolk_data[i + _x_offset]
+        y = y + self._yolk_data[i + _y_offset]
+    end
+
+    batch.centroid_x = x / (batch.n_white_particles + batch.n_yolk_particles)
+    batch.centroid_y = y / (batch.n_white_particles + batch.n_yolk_particles)
+end
+
 do
+    -- parameter to type for error handling
     local _valid_config_key_to_type = {
         damping = "number",
         color = "table",
@@ -1152,33 +1172,30 @@ do
     --- @brief [internal] override config setting
     function SimulationHandler:_load_config(config, white_or_yolk)
         for key, value in pairs(config) do
-            local value_type = _valid_config_key_to_type[config]
-            local is_valid = true
+            local value_type = _valid_config_key_to_type[key]
 
             if value_type == nil then
-                self:_warning( "In SimulationHandler._load_config: unrecognized config key `", key, "`. It will be ignored")
-                is_valid = false
+                log.warning( "In SimulationHandler._load_config: unrecognized config key `", key, "`. It will be ignored")
+                config[key] = nil
             elseif type(value) ~= value_type then
-                self:_error( "In SimulationHandler._load_config: wrong type for `", key, "`. Expected `", value_type, "`, got `", type(value), "`")
-                is_valid = false
+                log.error( "In SimulationHandler._load_config: wrong type for `", key, "`. Expected `", value_type, "`, got `", type(value), "`")
+                return
             end
 
             if value_type == "number" then
                 if math.is_nan(value) then
-                    self:_warning( "In SimulationHandler._load_config: value for key `", key, "` is NaN. It will be ignored")
-                    is_valid = false
+                    log.warning( "In SimulationHandler._load_config: value for key `", key, "` is NaN. It will be ignored")
+                    config[key] = nil
                 elseif value == math.huge or value == -math.huge then
-                    self:_warning( "In SimulationHandler._load_config: value for key `", key, "` is infinity. It will be ignored")
-                    is_valid = false
+                    log.warning( "In SimulationHandler._load_config: value for key `", key, "` is infinity. It will be ignored")
+                    config[key] = nil
                 end
             end
 
-            if is_valid then
-                if white_or_yolk == true then
-                    self._white_config[key] = value
-                elseif white_or_yolk == false then
-                    self._yolk_config[key] = value
-                end
+            if white_or_yolk == true then
+                self._white_config[key] = value
+            elseif white_or_yolk == false then
+                self._yolk_config[key] = value
             end
         end
     end
@@ -1376,7 +1393,10 @@ do
 
         local mass_sum = inverse_mass_a + inverse_mass_b
 
-        local correction = -constraint_violation / (mass_sum + compliance)
+        local divisor = (mass_sum + compliance)
+        if divisor < math.eps then return 0, 0, 0, 0 end
+
+        local correction = -constraint_violation / divisor
 
         local max_correction = math.abs(constraint_violation)
         correction = math.clamp(correction, -max_correction, max_correction)
@@ -1621,6 +1641,7 @@ do
             yolk_env.batch_id_to_radius[batch_id] = math.sqrt(batch.yolk_radius)
         end
 
+        -- update pre-step positions for frame interpolation
         local update_last_positions = function(env)
             local particles = env.particles
             local sum_x, sum_y = 0, 0
@@ -1766,8 +1787,9 @@ do
             local new_w = math.ceil((env.max_x - env.min_x) + 2 * padding)
             local new_h = math.ceil((env.max_y - env.min_y) + 2 * padding)
 
-            new_w = math.min(new_w, love.graphics.getWidth())
-            new_h = math.min(new_h, love.graphics.getHeight())
+            -- safety check, so canvases isn't unbounded on instable behavior
+            new_w = math.min(new_w, 2560)
+            new_h = math.min(new_h, 2560)
 
             -- reallocate if canvases needs to grow
             if new_w > current_w or new_h > current_h then
@@ -1798,18 +1820,14 @@ do
         self._last_yolk_env  = yolk_env
 
         self._canvases_need_update = true
+
+        for _, batch in pairs(self._batch_id_to_batch) do
+            batch.centroid_needs_update = true
+        end
     end
 end -- step helpers
 
 do
-    --- update a love shader uniform with error handling
-    local _send = function(shader, uniform, value)
-        local success, error_maybe = pcall(shader.send, shader, uniform, value)
-        if not success then
-            --SimulationHandler:_warning("In SimulationHandler._draw: ", error_maybe)
-        end
-    end
-
     --- @brief [internal] update canvases with particle data
     function SimulationHandler:_update_canvases()
         if self._canvases_need_update == false
@@ -1885,11 +1903,13 @@ do
 
         love.graphics.push("all")
         love.graphics.reset()
+
+        -- alpha is accumulated by additive blending, then normalized to 0, 1 automatically
         love.graphics.setBlendMode("screen", "premultiplied")
 
         if self._use_instancing then
             love.graphics.setShader(self._instanced_draw_shader)
-            _send(self._instanced_draw_shader, "interpolation_alpha", t)
+            self._instanced_draw_shader:send("interpolation_alpha", t)
         else
             love.graphics.setShader(nil)
         end
@@ -1898,8 +1918,8 @@ do
             local canvas = self._white_canvas
             local canvas_width, canvas_height = canvas:getDimensions()
             local env = self._last_white_env
-            _send(self._instanced_draw_shader, "motion_blur", env.motion_blur)
-            _send(self._instanced_draw_shader, "texture_scale", env.texture_scale)
+            self._instanced_draw_shader:send("motion_blur", env.motion_blur)
+            self._instanced_draw_shader:send("texture_scale", env.texture_scale)
 
             love.graphics.setCanvas(canvas)
             love.graphics.clear(0, 0, 0, 0)
@@ -1914,8 +1934,8 @@ do
             local canvas = self._yolk_canvas
             local canvas_width, canvas_height = canvas:getDimensions()
             local env = self._last_yolk_env
-            _send(self._instanced_draw_shader, "motion_blur", env.motion_blur)
-            _send(self._instanced_draw_shader, "texture_scale", env.texture_scale)
+            self._instanced_draw_shader:send("motion_blur", env.motion_blur)
+            self._instanced_draw_shader:send("texture_scale", env.texture_scale)
 
             love.graphics.setCanvas(canvas)
             love.graphics.clear(0, 0, 0, 0)
@@ -1938,11 +1958,11 @@ do
         love.graphics.setBlendMode("alpha", "alphamultiply")
 
         -- reuse threshold parameters
-        _send(self._outline_shader, "threshold", self._thresholding_threshold)
+        self._outline_shader:send("threshold", self._thresholding_threshold)
 
-        _send(self._lighting_shader, "threshold", self._thresholding_threshold)
-        _send(self._lighting_shader, "smoothness", self._thresholding_smoothness)
-        _send(self._lighting_shader, "use_particle_color", self._use_particle_color)
+        self._lighting_shader:send("threshold", self._thresholding_threshold)
+        self._lighting_shader:send("smoothness", self._thresholding_smoothness)
+        self._lighting_shader:send("use_particle_color", self._use_particle_color)
 
         local draw_canvas = function(canvas, env, config)
             local canvas_width, canvas_height = canvas:getDimensions()
@@ -1953,26 +1973,28 @@ do
             local outline_color = config.outline_color
             local outline_thickness = config.outline_thickness
 
-            love.graphics.setShader(self._outline_shader)
-            _send(self._outline_shader, "outline_thickness", outline_thickness)
-            love.graphics.setColor(outline_color)
-            love.graphics.draw(canvas, canvas_x, canvas_y)
+            if outline_thickness > 0 then
+                love.graphics.setShader(self._outline_shader)
+                self._outline_shader:send("outline_thickness", outline_thickness)
+                love.graphics.setColor(outline_color)
+                love.graphics.draw(canvas, canvas_x, canvas_y)
 
-            if self._use_particle_color then
-                love.graphics.setColor(1, 1, 1, 1)
-            else
-                love.graphics.setColor(color)
+                if self._use_particle_color then
+                    love.graphics.setColor(1, 1, 1, 1)
+                else
+                    love.graphics.setColor(color)
+                end
             end
 
             love.graphics.setShader(self._lighting_shader)
 
-            _send(self._lighting_shader, "highlight_strength", config.highlight_strength)
-            _send(self._lighting_shader, "use_highlight",
+            self._lighting_shader:send("highlight_strength", config.highlight_strength)
+            self._lighting_shader:send("use_highlight",
                 config.highlight_strength > 0 and self._use_lighting
             )
 
-            _send(self._lighting_shader, "shadow_strength", config.shadow_strength)
-            _send(self._lighting_shader, "use_shadow",
+            self._lighting_shader:send("shadow_strength", config.shadow_strength)
+            self._lighting_shader:send("use_shadow",
                 config.shadow_strength > 0 and self._use_lighting
             )
 
@@ -2035,12 +2057,12 @@ function SimulationHandler:_throw(is_fatal, ...)
     end
 end
 
---- @brief [internal]
+--- @brief [internal] throw fatal error that halts execution
 function SimulationHandler:_error(...)
     return self:_throw(true, ...)
 end
 
---- @brief [internal]
+--- @brief [internal] throw non-fatal error
 function SimulationHandler:_warning(...)
     return self:_throw(false, ...)
 end
@@ -2051,7 +2073,7 @@ function SimulationHandler:_assert(...)
 
     local n = select("#", ...)
     if n % 2 ~= 0 then
-        self:_error( "In SimulationHandler._assert: number of arguments is not a multiple of 2")
+        log.error( "In SimulationHandler._assert: number of arguments is not a multiple of 2")
         return should_exit
     end
 
@@ -2059,7 +2081,7 @@ function SimulationHandler:_assert(...)
         local instance = select(i + 0, ...)
         local instance_type = select(i + 1, ...)
         if not type(instance) == instance_type then
-            self:_error( "for argument #", i, ": expected `", instance_type, "`, got `", instance_type, "`")
+            log.error( "for argument #", i, ": expected `", instance_type, "`, got `", type(instance), "`")
             return should_exit
         end
     end
@@ -2067,9 +2089,32 @@ function SimulationHandler:_assert(...)
     return not should_exit
 end
 
--- return type, invoking the type returns an instance: `local instance = SimulationHandler()`
-return setmetatable(SimulationHandler, {
-    __call = function(...)
-        return SimulationHandler.new(...) -- ., not :
+--- @brief [internal] utility function that deepcopies a non-looping table
+function SimulationHandler:_deepcopy(t)
+    local function _deepcopy_inner(original, seen)
+        if type(original) ~= 'table' then
+            return original
+        end
+
+        if seen[original] then
+            error("In deepcopy: table `" .. tostring(original) .. "` is recursive, it cannot be deepcopied")
+            return {}
+        end
+
+        local copy = {}
+
+        seen[original] = copy
+        for k, v in pairs(original) do
+            copy[_deepcopy_inner(k, seen)] = _deepcopy_inner(v, seen)
+        end
+        seen[original] = nil
+
+        return copy
     end
-})
+
+    if type(t) ~= "table" then return t end
+    return _deepcopy_inner(t, {})
+end
+
+-- return type, invoking the type returns an instance: `local instance = SimulationHandler()`
+return SimulationHandler
