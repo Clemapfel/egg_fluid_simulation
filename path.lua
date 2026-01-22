@@ -1,5 +1,4 @@
 --- @class Path
---- @brief arc-length parameterized chain of line segments, unlike spline, extremely fast to evaluate
 local Path = {}
 setmetatable(Path, {
     __call = function(self, ...)
@@ -7,12 +6,14 @@ setmetatable(Path, {
     end
 })
 
-
 local log = require "egg_fluid_simulation.log"
 
 local _type_metatable = { __index = Path }
 
---- @brief
+--- @brief create a new path from points
+--- @param points number|number[] first x coord or flat array { x1, y1, x2, y2, ... }
+--- @param ... number remaining coordinates if first param is number
+--- @return Path
 function Path.new(points, ...)
     local self = setmetatable({}, _type_metatable)
 
@@ -29,13 +30,181 @@ function Path.new(points, ...)
     self._length = 0
     self._first_distance = 0
     self._last_distance = 0
-    self._use_arclength = false  -- track whether to use arc-length parameterization
+    self._use_arclength = false
 
     self:create_from(points, ...)
     return self
 end
 
---- @brief
+--- @brief get position at parameter t
+--- @param t number parameter value in [0, 1]
+--- @return number, number x and y coordinates
+function Path:at(t)
+    t = math.clamp(t, 0, 1)
+
+    local segment = self:_find_segment(t)
+    local local_t = (t - segment.fraction) / segment.fraction_length
+
+    local distance_along_segment = local_t * segment.distance
+    return math.add(
+        segment.from_x,
+        segment.from_y,
+        segment.dx * distance_along_segment,
+        segment.dy * distance_along_segment
+    )
+end
+
+--- @brief get the segment endpoints at parameter t
+--- @param t number parameter value in [0, 1]
+--- @return number, number, number, number from_x, from_y, to_x, to_y
+function Path:get_segment(t)
+    local segment = self:_find_segment(math.clamp(t, 0, 1))
+    return segment.from_x, segment.from_y, segment.to_x, segment.to_y
+end
+
+--- @brief get tangent direction at parameter t
+--- @param t number parameter value in [0, 1]
+--- @return number, number normalized direction vector dx, dy
+function Path:tangent_at(t)
+    local segment = self:_find_segment(math.clamp(t, 0, 1))
+    return segment.dx, segment.dy
+end
+
+
+--- @brief create path from list of points
+--- @param ... number|number[] coordinates as individual numbers or flat array
+--- @return Path
+function Path:create_from(...)
+    return self:_create_from(
+        false, -- resample with uniform spacing
+        false, -- arc-length parameterize
+        ...
+    )
+end
+
+--- @brief create path from list of points, then apply arc-length parameterization
+--- @param ... number|number[] coordinates as individual numbers or flat array
+--- @return Path
+function Path:create_from_and_reparameterize(...)
+    return self:_create_from(
+        false,
+        true,
+        ...
+    )
+end
+
+--- @brief create path from list of points, then resample uniformly
+--- @param ... number|number[] coordinates as individual numbers or flat array
+--- @return Path
+function Path:create_from_and_resample(...)
+    return self:_create_from(
+        true,
+        true,
+        ...
+    )
+end
+
+
+--- @brief get path points
+--- @return table[] array of point tables
+function Path:get_points()
+    local out = {}
+    for i = 1, self._n_points, 2 do
+        table.insert(out, {self._points[i], self._points[i+1]})
+    end
+    return out
+end
+
+--- @brief get total length of path
+--- @return number total length
+function Path:get_length()
+    return self._length
+end
+
+--- @brief overrides (arc-length) parameterization with custom per-segment fractions
+--- @param ... number fraction values for each segment, must sum to 1
+function Path:override_parameterization(...)
+    local n_args = select("#", ...)
+    if n_args ~= self._n_entries then
+        rt.error("In Path.override_parameterization: expected `",  self._n_entries,  "` parameters, got `",  n_args,  "`")
+        return
+    end
+
+    local total = 0
+    local args = {...}
+
+    -- validate arguments sum to 1
+    for i = 1, n_args do
+        local arg = args[i]
+        if type(arg) ~= "number" or arg < 0 then
+            rt.error("In Path:override_parameterization: parameter ",  i,  " must be a non-negative number")
+            return
+        end
+        total = total + arg
+    end
+
+    if math.abs(total - 1) > 1e-10 then
+        rt.error("In Path:override_parameterization: total length of override parameters is `",  total,  "`, but `1` was expected")
+        return
+    end
+
+    local fraction = 0
+    for i = 1, self._n_entries do
+        local entry = self._entries[i]
+        entry.fraction = fraction
+        entry.fraction_length = args[i]
+        fraction = fraction + args[i]
+    end
+end
+
+--- @brief get the number of segments in the path
+--- @return number segment count
+function Path:get_segment_count()
+    return self._n_entries
+end
+
+
+--- @brief find the closest point on the path to given coordinates
+--- @param x number query point x coordinate
+--- @param y number query point y coordinate
+--- @return number|nil, number|nil, number|nil closest x, y and parameter t, or nil if path is empty
+function Path:get_closest_point(x, y)
+    if self._n_entries == 0 then
+        return nil, nil, nil
+    end
+
+    local closest_distance_sq = math.huge
+    local closest_x, closest_y = nil, nil
+    local closest_t = 0
+
+    for i = 1, self._n_entries do
+        local entry = self._entries[i]
+        local segment_x, segment_y, segment_t = self:_closest_point_on_segment(x, y, entry)
+
+        local dx = segment_x - x
+        local dy = segment_y - y
+        local distance_sq = dx * dx + dy * dy
+
+        if distance_sq < closest_distance_sq then
+            closest_distance_sq = distance_sq
+            closest_x = segment_x
+            closest_y = segment_y
+            closest_t = segment_t
+        end
+    end
+
+    return closest_x, closest_y, closest_t
+end
+
+--- @brief get the flat array of point coordinates
+--- @return number[] flat array [x1, y1, x2, y2, ...]
+function Path:get_points()
+    return self._points
+end
+
+--- ### internals, never call any of the functions below ###
+
+--- @brief [internal] updates internal segment entries and calculates distances
 function Path:_update()
     local entries = {}
     local points = self._points
@@ -112,7 +281,9 @@ function Path:_update()
     self._last_distance = n_entries > 0 and entries[n_entries].fraction or 0
 end
 
---- @brief
+--- @brief [internal] finds the segment entry at parameter t using binary search
+--- @param t number parameter value in [0, 1]
+--- @return table|nil segment entry or nil if no segments exist
 function Path:_find_segment(t)
     local entries = self._entries
     local n_entries = self._n_entries
@@ -152,35 +323,13 @@ function Path:_find_segment(t)
     return entries[math.clamp(low, 1, n_entries)]
 end
 
---- @brief get position at parameter t [0, 1]
-function Path:at(t)
-    t = math.clamp(t, 0, 1)
-
-    local segment = self:_find_segment(t)
-    local local_t = (t - segment.fraction) / segment.fraction_length
-
-    local distance_along_segment = local_t * segment.distance
-    return math.add(
-        segment.from_x,
-        segment.from_y,
-        segment.dx * distance_along_segment,
-        segment.dy * distance_along_segment
-    )
-end
-
---- @brief
-function Path:get_segment(t)
-    local segment = self:_find_segment(math.clamp(t, 0, 1))
-    return segment.from_x, segment.from_y, segment.to_x, segment.to_y
-end
-
---- @brief
-function Path:tangent_at(t)
-    local segment = self:_find_segment(math.clamp(t, 0, 1))
-    return segment.dx, segment.dy
-end
-
---- @brief
+--- @brief [internal] create from points
+--- @param reparameterize_as_uniform boolean whether to resample points uniformly
+--- @param use_arclength boolean whether to use arc-length parameterization
+--- @param points number|number[] first coordinate or flat array
+--- @param ... number remaining coordinates
+--- @return Path
+--- @private
 function Path:_create_from(reparameterize_as_uniform, use_arclength, points, ...)
     if type(points) == "number" then
         points = { points, ... }
@@ -260,93 +409,12 @@ function Path:_create_from(reparameterize_as_uniform, use_arclength, points, ...
     return self
 end
 
---- @brief
-function Path:create_from(...)
-    return self:_create_from(
-        false, -- resample with uniform spacing
-        false, -- arc-length parameterize
-        ...
-    )
-end
-
---- @brief
-function Path:create_from_and_reparameterize(...)
-    return self:_create_from(
-        false,
-        true,
-        ...
-    )
-end
-
---- @brief
-function Path:create_from_and_resample(...)
-    return self:_create_from(
-        true,
-        true,
-        ...
-    )
-end
-
---- @brief
-function Path:get_points()
-    local out = {}
-    for i = 1, self._n_points, 2 do
-        table.insert(out, {self._points[i], self._points[i+1]})
-    end
-    return out
-end
-
---- @brief
-function Path:get_length()
-    return self._length
-end
-
---- @brief override arclength parameterization with custom per-segment fraction
---- @param ... number of values equal to number of segments, must sum to 1
-function Path:override_parameterization(...)
-    local n_args = select("#", ...)
-    if n_args ~= self._n_entries then
-        rt.error("In Path.override_parameterization: expected `",  self._n_entries,  "` parameters, got `",  n_args,  "`")
-        return
-    end
-
-    local total = 0
-    local args = {...}
-
-    -- validate arguments sum to 1
-    for i = 1, n_args do
-        local arg = args[i]
-        if type(arg) ~= "number" or arg < 0 then
-            rt.error("In Path:override_parameterization: parameter ",  i,  " must be a non-negative number")
-            return
-        end
-        total = total + arg
-    end
-
-    if math.abs(total - 1) > 1e-10 then
-        rt.error("In Path:override_parameterization: total length of override parameters is `",  total,  "`, but `1` was expected")
-        return
-    end
-
-    local fraction = 0
-    for i = 1, self._n_entries do
-        local entry = self._entries[i]
-        entry.fraction = fraction
-        entry.fraction_length = args[i]
-        fraction = fraction + args[i]
-    end
-end
-
---- @brief Get the number of segments in the path
-function Path:get_segment_count()
-    return self._n_entries
-end
-
---- @brief helper function to find closest point on a specific line segment
---- @param x number query point x
---- @param y number query point y
---- @param entry Table segment entry from self._entries
+--- @brief [internal] find closest point on a specific line segment
+--- @param x number query point x coordinate
+--- @param y number query point y coordinate
+--- @param entry table segment entry from self._entries
 --- @return number, number, number closest point x, y and global parameter t
+--- @private
 function Path:_closest_point_on_segment(x, y, entry)
     local x1, y1 = entry.from_x, entry.from_y
     local x2, y2 = entry.to_x, entry.to_y
@@ -372,38 +440,5 @@ function Path:_closest_point_on_segment(x, y, entry)
     return closest_x, closest_y, global_t
 end
 
---- @brief
-function Path:get_closest_point(x, y)
-    if self._n_entries == 0 then
-        return nil, nil, nil
-    end
-
-    local closest_distance_sq = math.huge
-    local closest_x, closest_y = nil, nil
-    local closest_t = 0
-
-    for i = 1, self._n_entries do
-        local entry = self._entries[i]
-        local segment_x, segment_y, segment_t = self:_closest_point_on_segment(x, y, entry)
-
-        local dx = segment_x - x
-        local dy = segment_y - y
-        local distance_sq = dx * dx + dy * dy
-
-        if distance_sq < closest_distance_sq then
-            closest_distance_sq = distance_sq
-            closest_x = segment_x
-            closest_y = segment_y
-            closest_t = segment_t
-        end
-    end
-
-    return closest_x, closest_y, closest_t
-end
-
---- @brief
-function Path:get_points()
-    return self._points
-end
 
 return Path

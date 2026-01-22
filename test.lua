@@ -20,16 +20,13 @@ local batch_ids = {} -- Table
 local solid_white_config, solid_yolk_config = simulation_handler:get_white_config(), simulation_handler:get_yolk_config()
 local fluid_config = {}
 
-fluid_config.min_mass = 2
-fluid_config.max_mass = 10
-fluid_config.texture_scale = solid_white_config.texture_scale - 1
+fluid_config.min_mass = 1 / 20
+fluid_config.max_mass = 1 - 1 / 20
+fluid_config.follow_strength = 0.8
+fluid_config.min_radius = 3.5
+fluid_config.max_radius = 3.5
 fluid_config.damping = 0.05
-fluid_config.follow_strength = 0.99
-fluid_config.cohesion_strength = 0.999
-fluid_config.cohesion_interaction_distance_factor = 10
-fluid_config.collision_strength = 0.990
-fluid_config.collision_overlap_factor = solid_yolk_config.collision_overlap_factor * 1.5
-fluid_config.motion_blur = solid_yolk_config.motion_blur * 2
+fluid_config.motion_blur = 0
 
 -- update loop
 love.update = function(delta)
@@ -73,15 +70,6 @@ _state.swap_egg_config = function()
         simulation_handler:set_yolk_config(solid_yolk_config)
     end
 
-    --[[
-    -- replace all batches with new ones to apply "static" settings
-    for _, batch_id in ipairs(batch_ids) do
-        local cx, cy = simulation_handler:get_position(batch_id)
-        simulation_handler:remove(batch_id)
-        simulation_handler:add(cx, cy)
-    end
-    ]]
-
     _state.current_egg_config = not _state.current_egg_config
 end
 
@@ -91,8 +79,8 @@ local Path = require "egg_fluid_simulation.path"
 
 -- input handling
 local _new_batch_key = "j"
-local _remove_batch_key = "g"
-local _regenerate_path_key = "h"
+local _remove_batch_key = "h"
+local _regenerate_path_key = "g"
 local _swap_egg_config_key = "l"
 
 love.keypressed = function(which)

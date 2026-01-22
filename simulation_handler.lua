@@ -477,6 +477,7 @@ end
 -- ### internals, never call any of the functions below ### --
 
 --- @brief [internal] clear the simulation, useful for debugging
+--- @private
 function SimulationHandler:_reinitialize()
     -- internal properties
     self._batch_id_to_batch = {} -- Table<Number, Batch>
@@ -578,6 +579,7 @@ function SimulationHandler:_reinitialize()
 end
 
 --- @brief [internal] load and compile necessary shaders
+--- @private
 function SimulationHandler:_initialize_shaders()
     local new_shader = function(path, defines)
         if defines == nil then defines = {} end
@@ -619,6 +621,7 @@ function SimulationHandler:_initialize_shaders()
 end
 
 --- @brief [internal] initialize mass distribution texture used for particle density estimation
+--- @private
 function SimulationHandler:_initialize_particle_texture()
     -- create particle texture, this will hold density information
     -- we use the same texture for all particles regardless of size,
@@ -682,6 +685,7 @@ function SimulationHandler:_initialize_particle_texture()
 end
 
 --- @brief [internal] initialize data related to instanced drawing
+--- @private
 function SimulationHandler:_initialize_instance_mesh()
     local new = function()
         -- 5-vertex quad with side length 1 centered at 0, 0
@@ -740,7 +744,8 @@ local _particle_i_to_data_offset = function(particle_i)
     return (particle_i - 1) * _stride + 1 -- 1-based
 end
 
---- @brief [internal]
+--- @brief [internal] upload vertex data mesh
+--- @private
 function SimulationHandler:_update_data_mesh()
     local function update_data_mesh(particles, n_particles, instance_mesh, mesh_data, mesh)
         if n_particles == 0 then return nil end
@@ -813,6 +818,7 @@ function SimulationHandler:_update_data_mesh()
 end
 
 --- @brief [internal] upload color mesh data for instanced drawing
+--- @private
 function SimulationHandler:_update_color_mesh()
     local function update_color_mesh(particles, n_particles, instance_mesh, mesh_data, mesh)
         if n_particles == 0 then return nil end
@@ -876,6 +882,7 @@ function SimulationHandler:_update_color_mesh()
 end
 
 --- @brief [internal] create a new particle batch
+--- @private
 function SimulationHandler:_new_batch(
     center_x, center_y,
     white_x_radius, white_y_radius, white_n_particles, white_color,
@@ -1040,6 +1047,7 @@ function SimulationHandler:_new_batch(
 end
 
 --- @brief [internal] remove particle data from shared array
+--- @private
 function SimulationHandler:_remove(white_indices, yolk_indices)
     local function remove_particles(indices, data, list_name)
         if not indices or #indices == 0 then return end
@@ -1112,6 +1120,7 @@ function SimulationHandler:_remove(white_indices, yolk_indices)
 end
 
 --- @brief [internal] write new color for all particles
+--- @private
 function SimulationHandler:_update_particle_color(batch, yolk_or_white)
     local particles, indices, color
     if yolk_or_white == true then
@@ -1135,16 +1144,15 @@ function SimulationHandler:_update_particle_color(batch, yolk_or_white)
 end
 
 --- @brief [internal] recompute batch centroid
+--- @private
 function SimulationHandler:_update_batch_centroid(batch)
     local x, y = 0, 0
-    for _, particle_i in ipairs(batch.white_particle_indices) do
-        local i = _particle_i_to_data_offset(particle_i)
+    for _, i in ipairs(batch.white_particle_indices) do
         x = x + self._white_data[i + _x_offset]
         y = y + self._white_data[i + _y_offset]
     end
 
-    for _, particle_i in ipairs(batch.yolk_particle_indices) do
-        local i = _particle_i_to_data_offset(particle_i)
+    for _, i in ipairs(batch.yolk_particle_indices) do
         x = x + self._yolk_data[i + _x_offset]
         y = y + self._yolk_data[i + _y_offset]
     end
@@ -1255,6 +1263,7 @@ do
     }
 
     --- @brief [internal] override config setting
+    --- @private
     function SimulationHandler:_load_config(config, white_or_yolk)
         local error = function(...)
             if white_or_yolk == true then
@@ -1438,7 +1447,7 @@ do
     local _solve_follow_constraint = function(
         particles, n_particles,
         batch_id_to_radius, batch_id_to_follow_x, batch_id_to_follow_y,
-        compliance
+        compliance, dt
     )
         for particle_i = 1, n_particles do
             local i = _particle_i_to_data_offset(particle_i)
@@ -1456,16 +1465,16 @@ do
             local current_distance = math.distance(x, y, follow_x, follow_y)
             local target_distance = 2 * batch_id_to_radius[batch_id]
 
-            -- XPBD: enforce distance to anchor to be 0
+            -- XPBD: enforce distance constraint with compliance
             local inverse_mass = particles[inverse_mass_i]
             if inverse_mass > math.eps and current_distance > target_distance then
                 local dx, dy = math.normalize(follow_x - x, follow_y - y)
 
                 local constraint_violation = current_distance - target_distance
-                local correction = constraint_violation / (inverse_mass + compliance)
+                local delta_lambda = constraint_violation / (inverse_mass + compliance)
 
-                local x_correction = dx * correction * inverse_mass
-                local y_correction = dy * correction * inverse_mass
+                local x_correction = dx * delta_lambda * inverse_mass
+                local y_correction = dy * delta_lambda * inverse_mass
 
                 particles[x_i] = particles[x_i] + x_correction
                 particles[y_i] = particles[y_i] + y_correction
@@ -1721,6 +1730,7 @@ do
     end
 
     --- @brief [internal] step the simulation
+    --- @private
     function SimulationHandler:_step(delta, n_sub_steps, n_collision_steps)
         local sub_delta = math.max(delta / n_sub_steps, math.eps)
 
@@ -1993,6 +2003,7 @@ end -- step helpers
 
 do
     --- @brief [internal] update canvases with particle data
+    --- @private
     function SimulationHandler:_update_canvases()
         if self._canvases_need_update == false
             or self._yolk_canvas == nil
@@ -2084,7 +2095,6 @@ do
             local env = self._last_white_env
             self._instanced_draw_shader:send("motion_blur", env.motion_blur)
             self._instanced_draw_shader:send("texture_scale", env.texture_scale)
-
             love.graphics.setCanvas(canvas)
             love.graphics.clear(0, 0, 0, 0)
 
@@ -2115,6 +2125,7 @@ do
     end
 
     --- @brief [internal] composite canvases to final image
+    --- @private
     function SimulationHandler:_draw_canvases()
         if self._white_canvas == nil or self._yolk_canvas == nil then return end
 
@@ -2182,78 +2193,8 @@ do
     end
 end
 
---- @brief [internal] throw error with pretty printing
-function SimulationHandler:_throw(is_fatal, ...)
-    -- make it so output is flushed to console immediately, because
-    -- love.errorhandler does not flush
-    io.stdout:setvbuf("no")
-
-    local message = {}
-    if is_fatal then
-        table.insert(message, "[ERROR]")
-    else
-        table.insert(message, "[WARNING]")
-    end
-
-    -- get current line number, if possible
-    local debug_line_number_acquired = false
-    if debug ~= nil then
-        local info = debug.getinfo(3, "Sl")
-        if info ~= nil and info.short_src ~= nil and info.lastlinedefined ~= nil then
-            table.insert(message, "In " .. info.short_src .. ":" .. info.lastlinedefined .. ": ")
-            debug_line_number_acquired = true
-        end
-    end
-
-    for i = 1, select("#", ...) do
-        local arg = select(i, ...)
-        table.insert(message, arg)
-    end
-
-    message = table.concat(message, " ") .. "\n"
-
-    -- write to error stream and flush
-    if is_fatal then
-        error(message)
-    else
-        io.stderr:write(message .. "\n")
-        io.stderr:flush()
-    end
-end
-
---- @brief [internal] throw fatal error that halts execution
-function SimulationHandler:_error(...)
-    return self:_throw(true, ...)
-end
-
---- @brief [internal] throw non-fatal error
-function SimulationHandler:_warning(...)
-    return self:_throw(false, ...)
-end
-
---- @brief [internal] assert function arguments to be of a specific type
-function SimulationHandler:_assert(...)
-    local should_exit = true
-
-    local n = select("#", ...)
-    if n % 2 ~= 0 then
-        log.error( "In SimulationHandler._assert: number of arguments is not a multiple of 2")
-        return should_exit
-    end
-
-    for i = 1, n, 2 do
-        local instance = select(i + 0, ...)
-        local instance_type = select(i + 1, ...)
-        if not type(instance) == instance_type then
-            log.error( "for argument #", i, ": expected `", instance_type, "`, got `", type(instance), "`")
-            return should_exit
-        end
-    end
-
-    return not should_exit
-end
-
 --- @brief [internal] utility function that deepcopies a non-looping table
+--- @private
 function SimulationHandler:_deepcopy(t)
     local function _deepcopy_inner(original, seen)
         if type(original) ~= 'table' then
