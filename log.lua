@@ -35,7 +35,7 @@ local function throw(is_fatal, ...)
         table.insert(message, tostring(arg))
     end
 
-    message = table.concat(message, " ")
+    message = table.concat(message, "")
 
     -- write to error stream and flush
     if is_fatal then

@@ -720,17 +720,18 @@ local _velocity_y_offset = 4 -- y velocity, px / s
 local _previous_x_offset = 5 -- last sub steps x position, px
 local _previous_y_offset = 6 -- last sub steps y position, px
 local _radius_offset = 7 -- radius, px
-local _mass_offset = 8 -- mass, fraction
-local _inverse_mass_offset = 9 -- 1 / mass, precomputed for performance
-local _cell_x_offset = 10 -- spatial hash x coordinate, set in _step
-local _cell_y_offset = 11 -- spatial hash y coordinate
-local _batch_id_offset = 12 -- batch id
-local _r_offset = 13 -- rgba red
-local _g_offset = 14 -- rgba green
-local _b_offset = 15 -- rgba blue
-local _a_offset = 16 -- rgba opacity
-local _last_update_x_offset = 17 -- last whole step x position, px
-local _last_update_y_offset = 18 -- last whole step x position, px
+local _mass_distribution_t_offset = 8
+local _mass_offset = 9 -- mass, fraction
+local _inverse_mass_offset = 10 -- 1 / mass, precomputed for performance
+local _cell_x_offset = 11 -- spatial hash x coordinate, set in _step
+local _cell_y_offset = 12 -- spatial hash y coordinate
+local _batch_id_offset = 13 -- batch id
+local _r_offset = 14 -- rgba red
+local _g_offset = 15 -- rgba green
+local _b_offset = 16 -- rgba blue
+local _a_offset = 17 -- rgba opacity
+local _last_update_x_offset = 18 -- last whole step x position, px
+local _last_update_y_offset = 19 -- last whole step x position, px
 
 local _stride = _last_update_y_offset + 1
 
@@ -976,6 +977,7 @@ function SimulationHandler:_new_batch(
         array[i + _previous_x_offset] = x
         array[i + _previous_y_offset] = y
         array[i + _radius_offset] = radius
+        array[i + _mass_distribution_t_offset] = t
         array[i + _mass_offset] = mass
         array[i + _inverse_mass_offset] = 1 / mass
         array[i + _cell_x_offset] = -math.huge
@@ -1152,43 +1154,161 @@ function SimulationHandler:_update_batch_centroid(batch)
 end
 
 do
-    -- parameter to type for error handling
-    local _valid_config_key_to_type = {
-        damping = "number",
-        color = "table",
-        outline_color = "table",
-        outline_thickness = "number",
-        collision_strength = "number",
-        collision_overlap_factor = "number",
-        cohesion_strength = "number",
-        cohesion_interaction_distance_factor = "number",
-        follow_strength = "number",
-        min_radius = "number",
-        max_radius = "number",
-        min_mass = "number",
-        max_mass = "number"
+    -- parameter to type and bounds for error handling
+    local _valid_config_keys = {
+        damping = {
+            type = "number",
+            min = 0,
+            max = 1
+        },
+
+        color = {
+            type = "color",
+        },
+
+        outline_color = {
+            type = "color",
+        },
+
+        outline_thickness = {
+            type = "number",
+            min = 0
+        },
+
+        collision_strength = {
+            type = "number",
+            min = 0,
+            max = 1
+        },
+
+        collision_overlap_factor = {
+            type = "number",
+            min = 0,
+            max = nil
+        },
+
+        cohesion_strength = {
+            type = "number",
+            min = 0,
+            max = 1
+        },
+
+        cohesion_interaction_distance_factor = {
+            type = "number",
+            min = 0,
+            max = nil
+        },
+
+        follow_strength = {
+            type = "number",
+            min = 0,
+            max = 1
+        },
+
+        min_radius = {
+            type = "number",
+            min = 0,
+            max = nil
+        },
+
+        max_radius = {
+            type = "number",
+            min = 0,
+            max = nil
+        },
+
+        min_mass = {
+            type = "number",
+            min = 0,
+            max = nil
+        },
+
+        max_mass = {
+            type = "number",
+            min = 0,
+            max = nil
+        },
+
+        motion_blur = {
+            type = "number",
+            min = 0,
+            max = 1
+        },
+
+        texture_scale = {
+            type = "number",
+            min = 1,
+            max = nil
+        },
+
+        highlight_strength = {
+            type = "number",
+            min = 0,
+            max = nil
+        },
+
+        shadow_strength = {
+            type = "number",
+            min = 0,
+            max = nil
+        }
     }
 
     --- @brief [internal] override config setting
     function SimulationHandler:_load_config(config, white_or_yolk)
-        for key, value in pairs(config) do
-            local value_type = _valid_config_key_to_type[key]
+        local error = function(...)
+            if white_or_yolk == true then
+                log.error("In SimulationHandler.set_white_config: ", ...)
+            else
+                log.error("In SimulationHandler.set_yolk_config: ", ...)
+            end
+        end
 
-            if value_type == nil then
-                log.warning( "In SimulationHandler._load_config: unrecognized config key `", key, "`. It will be ignored")
-                config[key] = nil
-            elseif type(value) ~= value_type then
-                log.error( "In SimulationHandler._load_config: wrong type for `", key, "`. Expected `", value_type, "`, got `", type(value), "`")
-                return
+        local warning = function(...)
+            if white_or_yolk == true then
+                log.warning("In SimulationHandler.set_white_config: ", ...)
+            else
+                log.warning("In SimulationHandler.set_yolk_config: ", ...)
+            end
+        end
+
+        for key, value in pairs(config) do
+            local entry = _valid_config_keys[key]
+            if entry == nil then
+                warning("unrecognized config key `", key, "`, it will be ignored")
+                goto ignore
             end
 
-            if value_type == "number" then
-                if math.is_nan(value) then
-                    log.warning( "In SimulationHandler._load_config: value for key `", key, "` is NaN. It will be ignored")
-                    config[key] = nil
-                elseif value == math.huge or value == -math.huge then
-                    log.warning( "In SimulationHandler._load_config: value for key `", key, "` is infinity. It will be ignored")
-                    config[key] = nil
+            if entry.type == "color" then
+                -- assert value is rgba table
+                for i = 1, 4 do
+                    local component = value[i]
+                    if component == nil or #value > 4 then
+                        error("color `", key, "` does not have 4 components")
+                        return
+                    elseif type(component) ~= "number" or math.is_nan(component) then
+                        error("color `", key, "` has a component that is not a number")
+                        return
+                    elseif component < 0 or component > 1 then
+                        warning("color `", key, "` has a component that is outside of [0, 1]")
+                    end
+
+                    value[i] = math.clamp(component, 0, 1)
+                end
+            else
+                -- assert type and bounds
+                if entry.type ~= nil and type(value) ~= entry.type then
+                    error("wrong type for config key `", key, "`, expected `", entry.type, "`, got `", type(value), "`")
+                    return
+                elseif entry.type ~= nil and entry.type == "number" and math.is_nan(value) then
+                    warning("config key `", key, "` is NaN, it will be ignored")
+                    goto ignore
+                elseif entry.min ~= nil and value < entry.min then
+                    warning("config key `", key, "`'s value is `", value, "`, expected a value larger than `", entry.min, "`")
+                    value = math.max(value, entry.min)
+                elseif entry.max ~= nil and value > entry.max then
+                    warning("config key `", key, "`'s value is `", value, "`, expected a value smaller than `", entry.max, "`")
+                    value = math.min(value, entry.max)
                 end
             end
 
@@ -1197,6 +1317,8 @@ do
             elseif white_or_yolk == false then
                 self._yolk_config[key] = value
             end
+
+            ::ignore::
         end
     end
 end
@@ -1271,20 +1393,23 @@ do
     end
 
     --- pre solve: integrate velocity and update last position
-    local _pre_solve = function(particles, n_particles, damping, delta)
+    local _pre_solve = function(
+        particles, n_particles,
+        damping, delta,
+        should_update_mass, min_mass, max_mass,
+        should_update_radius, min_radius, max_radius
+    )
         for particle_i = 1, n_particles do
             local i = _particle_i_to_data_offset(particle_i)
             local x_i = i + _x_offset
             local y_i = i + _y_offset
-            local previous_x_i = i + _previous_x_offset
-            local previous_y_i = i + _previous_y_offset
             local velocity_x_i = i + _velocity_x_offset
             local velocity_y_i = i + _velocity_y_offset
 
             local x, y = particles[x_i], particles[y_i]
 
-            particles[previous_x_i] = x
-            particles[previous_y_i] = y
+            particles[i + _previous_x_offset] = x
+            particles[i + _previous_y_offset] = y
 
             local velocity_x = particles[velocity_x_i] * damping
             local velocity_y = particles[velocity_y_i] * damping
@@ -1294,6 +1419,18 @@ do
 
             particles[x_i] = x + delta * velocity_x
             particles[y_i] = y + delta * velocity_y
+
+            -- recompute mass / radius from distribution
+            local mass_t = particles[i + _mass_distribution_t_offset]
+            if should_update_mass then
+                local mass = math.mix(min_mass, max_mass, mass_t)
+                particles[i + _mass_offset] = mass
+                particles[i + _inverse_mass_offset] = 1 / mass
+            end
+
+            if should_update_radius then
+                particles[i + _radius_offset] = math.mix(min_radius, max_radius, mass_t)
+            end
         end
     end
 
@@ -1593,6 +1730,21 @@ do
             env.particles = particles
             env.n_particles = n_particles
 
+            if old_env ~= nil then
+                env.should_update_mass = config.min_mass ~= old_env.min_mass
+                    or config.max_mass ~= old_env.max_mass
+                env.should_update_radius = config.min_radius ~= old_env.min_radius
+                    or config.max_radius ~= old_env.max_radius
+            else
+                env.should_update_mass = true
+                env.should_update_radius = true
+            end
+
+            env.min_mass = config.min_mass
+            env.max_mass = config.max_mass
+            env.min_radius = config.min_radius
+            env.max_radius = config.max_radius
+
             env.texture_scale = config.texture_scale
             env.motion_blur = config.motion_blur
 
@@ -1673,14 +1825,26 @@ do
                 white_env.particles,
                 white_env.n_particles,
                 white_env.damping,
-                sub_delta
+                sub_delta,
+                white_env.should_update_mass,
+                white_env.min_mass,
+                white_env.max_mass,
+                white_env.should_update_radius,
+                white_env.min_radius,
+                white_env.max_radius
             )
 
             _pre_solve(
                 yolk_env.particles,
                 yolk_env.n_particles,
                 yolk_env.damping,
-                sub_delta
+                sub_delta,
+                yolk_env.should_update_mass,
+                yolk_env.min_mass,
+                yolk_env.max_mass,
+                yolk_env.should_update_radius,
+                yolk_env.min_radius,
+                yolk_env.max_radius
             )
 
             _solve_follow_constraint(

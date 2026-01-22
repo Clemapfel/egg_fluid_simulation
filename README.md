@@ -74,17 +74,10 @@ Further generally useful functions include:
 
 The simulation uses a number of parameters that decide the motion and properties of the eggs. The solver can be highly sensitive to changes in parameters, so it is recommended to change them with caution, as an ill-chosen set of parameters can lead to instability, usually resulting in jitter, or particles overshooting and exploding away instead of behaving like a fluid.
 
-To overwrite a parameter, we use `set_white_config` and `set_yolk_config`, both take the same set of parameter names, but the values of the parameters are separate for the yolk and white.
-
-Properties can either be **static** or **dynamic**.
-+ **dynamic** properties will take effect immediately in the next `update`
-+ **static** properties will only apply for new batches, currently existing batches are *unaffected*
-
-Dynamic properties can easily be changed on-the-fly, as long as their values are reasonable, the simulation will smoothly interpolate the old and new behavior. Static properties should be set before the simulation is started, as this way they correctly apply to all batches.
+To overwrite a parameter, we use `set_white_config` and `set_yolk_config`, both take the same set of parameter names, but the values of the parameters are separate for the yolk and white. Parameters are applied immedaitely upone the next simulation step.
 
 ### Damping
 
-Type: dynamic
 Unit: fraction in [0, 1]
 Recommended Range: 0.05 - 0.2
 
@@ -98,7 +91,6 @@ handler:set_white_config({
 
 ### Mass Distribution
 
-Type: static
 Unit: unitless
 Recommended Range: >=1
 
@@ -113,7 +105,6 @@ handler:set_white_config({
 
 ### Collision Strength
 
-Type: dynamic
 Unit: fraction in [0, 1]
 Recommended Range: 0.2 - 1
 
@@ -127,7 +118,6 @@ handler:set_white_config({
 
 ### Collision Overlap Factor
 
-Type: dynamic
 Unit: factor
 Recommended Range: 1 - 3
 
@@ -141,7 +131,6 @@ handler:set_white_config({
 
 ### Follow Strength
 
-Type: dynamic
 Unit: fraction in [0, 1)
 Recommend Range: 0.2 - 0.9990
 
@@ -155,7 +144,6 @@ handler:set_white_config({
 
 ### Cohesion Strength
 
-Type: dynamic
 Unit: fraction in [0, 1]
 Recommended range: 0.0 - 0.9990
 
@@ -169,7 +157,6 @@ handler:set_white_config({
 
 ### Cohesion Interaction Distance Factor
 
-Type: dynamic
 Unit: factor
 Recommended Range: 1 - 3
 
@@ -181,10 +168,8 @@ handler:set_white_config({
 })
 ```
 
-
 ### Step Delta
 
-Type: dynamic
 Unit: seconds
 Recommended Range: 1 / 60 or 1 / 120
 
@@ -199,7 +184,6 @@ handler:update(
 
 ### Number of Sub Steps
 
-Type: dynamic
 Unit: count, unsigned integer
 Recommended Range: >= 2
 
@@ -217,7 +201,6 @@ handler:update(
 
 ### Number of Collision Steps
 
-Type: dynamic
 Unit: count, unsigned integer
 Recommended Range: 1 - 3
 
@@ -236,7 +219,6 @@ handler:update(
 
 ### Texture Scale
 
-Type: dynamic
 Unit: factor
 Recommended Range: 5 - 15
 
@@ -248,9 +230,22 @@ handler:set_white_config({
 })
 ```
 
+### Radius Distribution
+
+Unit: pixels
+Recommend Range: 1 - 5
+
+This is the base size of each particle, which will later be multiplied by the texture scale to draw the final image for each particle. Increasing this will cause the entire egg to appear larger in area, while maintaining the number of particles. Changing a particles radius will also multiply with `cohesion_interaction_distance_factor` and `collision_overlap_factor`, so care should be taken to tune these parameters as a whole, instead of just increasing radius.
+
+```lua
+handler:set_white_config({
+    min_radius = 1,
+    max_radius = 3
+})
+```
+
 ### Motion Blur
 
-Type: dynamic
 Unit: factor per pixel per second
 Recommended Range: 0 - 0.001
 
@@ -264,16 +259,15 @@ handler:set_white_config({
 
 ### Color, Outline Color
 
-Type: dynamic
 Unit: rgba, components in [0, 1]
 
-Sets the color of the yolk or white, this will be the base color used for drawing. Lighting is applied on top. This property is set using `set_white_color` and `set_yolk_color`, an optional second set of arguments can be given to determine the outline color of that eggs part.
+Sets the color of the yolk or white, this will be the base color used for drawing. Lighting is applied on top. Both the base color and outline color can be chosen separately.
 
 ```lua
-handler:set_yolk_color(
-    1, 0.9, 1, 1,        -- base color
-    0.33, 0.25, 0.33, 1 -- outline color
-)
+handler:set_white_config({
+    color = { 1, 0.9, 1, 1 }, -- base color
+    outline_color = { 0.33, 0.25, 0.33, 1 } -- outline color
+})
 ```
 
 ### Outline Thickness
