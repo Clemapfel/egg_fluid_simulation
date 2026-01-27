@@ -21,12 +21,29 @@ setmetatable(SimulationHandler, {
 --- @param yolk_radius number? radius of egg yolk, px
 --- @param white_color table? color in rgba format, components in [0, 1]
 --- @param yolk_color table? color in rgba format, components in [0, 1]
+--- @param white_n_particles number? optional override option for white particle count
+--- @param yolk_n_particles number? optional override option for yolk particle count
 --- @return number integer id of the new batch
-function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yolk_color)
-    if white_radius == nil then white_radius = 50 end
+function SimulationHandler:add(
+    x, y,
+    white_radius, yolk_radius,
+    white_color, yolk_color,
+    white_n_particles, yolk_n_particles
+)
+    local white_particle_radius = math.mix(
+        self._white_config.min_radius,
+        self._white_config.max_radius,
+        0.5
+    ) -- expected value. symmetrically normal distributed around mean
+
+    local yolk_particle_radius = math.mix(self._yolk_config.min_radius, self._yolk_config.max_radius, 0.5)
+
+    if white_radius == nil then
+        white_radius = white_particle_radius * 15
+    end
+
     if yolk_radius == nil then
         yolk_radius = white_radius * (10 / 50)
-        -- fraction experimentally determined to look nice
     end
     
     white_color = white_color or self._white_config.color
@@ -72,15 +89,25 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
         end
     end
 
-    local white_particle_radius = math.mix(self._white_config.min_radius, self._white_config.max_radius, 0.5) -- expected value
-    local white_n_particles = math.ceil(math.max(5,
+    white_n_particles = white_n_particles or math.ceil(
         (math.pi * white_radius^2) / (math.pi * white_particle_radius^2)
-    )) -- (area of white) / (area of particle), where circular area = 2 pi r^2
+    ) -- (area of white) / (area of particle), where circular area = 2 pi r^2
 
-    local yolk_particle_radius = math.mix(self._yolk_config.min_radius, self._yolk_config.max_radius, 0.5)
-    local yolk_n_particles = math.ceil(math.max(3,
+    yolk_n_particles = yolk_n_particles or math.ceil(
         (math.pi * yolk_radius^2) / (math.pi * yolk_particle_radius^2)
-    ))
+    )
+
+    local warn = function(which, egg_radius, particle_radius, n_particles)
+        log.warning("In SimulationHandler.add: trying to add ", which, " of radius `", egg_radius, "`, but the ", which, " particle radius is `~", particle_radius, "`, so only `", n_particles, "` particles will be created. Consider increasing the ", which, " radius or decreasing the ", which, " particle size")
+    end
+
+    if white_n_particles < 10 then
+        warn("white", white_radius, white_particle_radius, white_n_particles)
+    end
+
+    if yolk_n_particles < 5 then
+        warn("yolk", yolk_radius, yolk_particle_radius, yolk_n_particles)
+    end
 
     self._total_n_white_particles = self._total_n_white_particles + white_n_particles
     self._total_n_yolk_particles = self._total_n_yolk_particles + yolk_n_particles
@@ -365,19 +392,19 @@ function SimulationHandler:list_ids()
         table.insert(ids, id)
     end
     return ids
-end
+    end
 
---- @brief get total number of particles
---- @return number
-function SimulationHandler:get_n_particles(batch_or_nil)
-    if batch_or_nil == nil then
-        return self._total_n_white_particles + self._total_n_yolk_particles
+    --- @brief get total number of particles
+    --- @return number
+    function SimulationHandler:get_n_particles(batch_or_nil)
+        if batch_or_nil == nil then
+            return self._total_n_white_particles, self._total_n_yolk_particles
     else
         local batch = self._batch_id_to_batch[batch_or_nil]
         if batch == nil then
             log.error("In SimulationHandler:get_n_particles: no batch with id `", batch_or_nil, "`")
         end
-        return batch.n_white_particles + batch.n_yolk_particles
+        return batch.n_white_particles, batch.n_yolk_particles
     end
 end
 
@@ -404,8 +431,8 @@ function SimulationHandler.new()
 
         follow_strength = 1 - 0.004,
 
-        cohesion_strength = 1 - 0.001,
-        cohesion_interaction_distance_factor = 3,
+        cohesion_strength = 1 - 0.05,
+        cohesion_interaction_distance_factor = 2,
 
         collision_strength = 1,
         collision_overlap_factor = 2,

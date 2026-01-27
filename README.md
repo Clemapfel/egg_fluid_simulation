@@ -176,6 +176,33 @@ handler:set_white_config({
 })
 ```
 
+### Number of Particles
+
+Unit: unitless count
+
+The simulation will automatically estimate the number of required particles based on the average particle radius, as controlled by `min_radius`, `max_radius`, and the requested area of the white and yolk specified in `add`. We can get the current number of particles for each batch like so:
+
+```lua
+local white_n_particles, yolk_n_particles = handler:get_n_particles(batch_id)
+```
+
+or, if `batch_id` is nil, it will return the sum total number of particles for all batches, again separately for white and yolk.
+
+We can manually control the number of particles of each batch using two additional optional arguments of `add`:
+```lua
+handler:add(
+    25, 50, -- batch xy
+    30, 15, -- batch white radius, batch yolk radius
+    nil, nil, -- batch colors (unset, will be kept at default)
+    20, -- number of white particles override 
+    20  -- number of yolk particles override
+)
+```
+
+This gives us finer control over how many particles are active in each batch. The simulation can become unstable if the
+number of particles is very low (< 5) or very high (> 200). While there is a performance incentive to keep the number of
+particles low, for best stability the solver should have at least 15 - 30 particles to work with.
+
 ### Step Delta
 
 Unit: seconds
