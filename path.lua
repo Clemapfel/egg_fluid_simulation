@@ -167,23 +167,84 @@ end
 --- @brief find the closest point on the path to given coordinates
 --- @param x number query point x coordinate
 --- @param y number query point y coordinate
+--- @param min_t number|nil optional minimum parameter value (default 0)
+--- @param max_t number|nil optional maximum parameter value (default 1)
 --- @return number|nil, number|nil, number|nil closest x, y and parameter t, or nil if path is empty
-function Path:get_closest_point(x, y)
+function Path:get_closest_point(x, y, min_t, max_t)
     if self._n_entries == 0 then
         return nil, nil, nil
+    end
+
+    -- default to full range if not specified
+    min_t = min_t or 0
+    max_t = max_t or 1
+
+    -- clamp to valid range
+    min_t = math.clamp(min_t, 0, 1)
+    max_t = math.clamp(max_t, 0, 1)
+
+    -- ensure min_t <= max_t
+    if min_t > max_t then
+        min_t, max_t = max_t, min_t
+    end
+
+    -- find the first and last segments that overlap with [min_t, max_t]
+    local first_segment = self:_find_segment(min_t)
+    local last_segment = self:_find_segment(max_t)
+
+    if first_segment == nil or last_segment == nil then
+        return nil, nil, nil
+    end
+
+    -- find indices of first and last segments
+    local start_idx = nil
+    local end_idx = nil
+    for i = 1, self._n_entries do
+        if self._entries[i] == first_segment and start_idx == nil then
+            start_idx = i
+        end
+        if self._entries[i] == last_segment then
+            end_idx = i
+        end
     end
 
     local closest_distance_sq = math.huge
     local closest_x, closest_y = nil, nil
     local closest_t = 0
 
-    for i = 1, self._n_entries do
+    for i = start_idx, end_idx do
         local entry = self._entries[i]
-        local segment_x, segment_y, segment_t = self:_closest_point_on_segment(x, y, entry)
+        local entry_start = entry.fraction
+        local entry_end = entry.fraction + entry.fraction_length
+
+        -- find the valid range within this segment
+        local segment_min_t = math.max(0, (min_t - entry_start) / entry.fraction_length)
+        local segment_max_t = math.min(1, (max_t - entry_start) / entry.fraction_length)
+
+        -- clamp the closest point search to the valid range
+        local x1, y1 = entry.from_x, entry.from_y
+        local x2, y2 = entry.to_x, entry.to_y
+        local segment_dx = x2 - x1
+        local segment_dy = y2 - y1
+        local segment_length_sq = math.magnitude(segment_dx, segment_dy)
+
+        local segment_x, segment_y, local_t
+        if segment_length_sq < math.eps then
+            -- degenerate segment
+            local_t = (segment_min_t + segment_max_t) * 0.5
+            segment_x, segment_y = x1, y1
+        else
+            local dot = math.dot(x - x1, y - y1, segment_dx, segment_dy)
+            local_t = math.clamp(dot / segment_length_sq, segment_min_t, segment_max_t)
+            segment_x = x1 + local_t * segment_dx
+            segment_y = y1 + local_t * segment_dy
+        end
+
+        local segment_t = entry_start + entry.fraction_length * local_t
 
         local dx = segment_x - x
         local dy = segment_y - y
-        local distance_sq = dx * dx + dy * dy
+        local distance_sq = math.magnitude(dx, dy)
 
         if distance_sq < closest_distance_sq then
             closest_distance_sq = distance_sq
