@@ -1,7 +1,7 @@
 local shader_path_prefix = "egg_fluid_simulation"
 -- path prefix, uses / instead of ., change this depending on where the library is located
--- for example, if this file is in /common/simulation/simulation_handler replace this
--- with `common/simulation_handler`
+-- for example, if this file is in /common/simulation/simulation_handler.lua replace this
+-- with `common/simulation/simulation_handler`
 
 require(string.gsub(shader_path_prefix .. "/math", "[/\\]", "."))
 local log = require(shader_path_prefix .. "/log", "[/\\]", ".")
