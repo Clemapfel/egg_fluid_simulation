@@ -41,7 +41,7 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
         yolk_color, "table"
     )
     
-    if white_radius <= 0 then 
+    if white_radius <= 0 then
         log.error( "In SimulationHandler.add: white radius cannot be 0 or negative")
     end
 
@@ -77,7 +77,7 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
         (math.pi * white_radius^2) / (math.pi * white_particle_radius^2)
     )) -- (area of white) / (area of particle), where circular area = 2 pi r^2
 
-    local yolk_particle_radius = self._yolk_config.texture_scale * math.mix(self._yolk_config.min_radius, self._yolk_config.max_radius, 0.5)
+    local yolk_particle_radius = math.mix(self._yolk_config.min_radius, self._yolk_config.max_radius, 0.5)
     local yolk_n_particles = math.ceil(math.max(3,
         (math.pi * yolk_radius^2) / (math.pi * yolk_particle_radius^2)
     ))
