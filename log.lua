@@ -1,6 +1,5 @@
 --- @brief Logging module for error and warning handling
 --- @module log
-
 local log = {}
 
 --- @brief Internal function to throw error or warning with pretty printing

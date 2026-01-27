@@ -587,6 +587,11 @@ end
 function SimulationHandler:_initialize_shaders()
     local new_shader = function(path, defines)
         if defines == nil then defines = {} end
+
+        if love.filesystem.getInfo(path) == nil then
+            log.error("In SimulationHandler._initialize_shader: unable to create shader `", path, "`: file does not exist. Was `shader_path_prefix` at the top of `simulation_handler.lua` set correctly?")
+        end
+
         local success, shader_or_error = pcall(
             love.graphics.newShader,
             path

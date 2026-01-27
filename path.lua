@@ -1,3 +1,5 @@
+local log = require "egg_fluid_simulation.log" -- you may need to change this path
+
 --- @class Path
 local Path = {}
 setmetatable(Path, {

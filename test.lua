@@ -6,9 +6,10 @@ require "common.sound_manager"
 require "common.input_manager"
 
 local _state = {} -- ignore this
+local prefix = "egg_fluid_simulation" -- file location
 
 -- import types
-local SimulationHandler = require "egg_fluid_simulation.test.simulation_handler"
+local SimulationHandler = require(prefix .. ".simulation_handler")
 
 -- handler instance
 local simulation_handler = SimulationHandler() -- simulation instance
@@ -75,7 +76,7 @@ end
 
 --- ### internals, ignore everything below ###
 
-local Path = require "egg_fluid_simulation.test.path"
+local Path = require(prefix .. ".path")
 
 -- input handling
 local _new_batch_key = "j"
