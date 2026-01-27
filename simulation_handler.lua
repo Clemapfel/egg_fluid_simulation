@@ -1,6 +1,10 @@
-local prefix = "egg_fluid_simulation" -- path prefix, change this depending on where the library is located
-require(prefix .. ".math")
-local log = require(prefix .. ".log")
+local shader_path_prefix = "egg_fluid_simulation"
+-- path prefix, uses / instead of ., change this depending on where the library is located
+-- for example, if this file is in /common/simulation/simulation_handler replace this
+-- with `common/simulation_handler`
+
+require(string.gsub(shader_path_prefix .. "/math", "[/\\]", "."))
+local log = require(shader_path_prefix .. "/log", "[/\\]", ".")
 
 --- @class SimulationHandler
 local SimulationHandler = {}
@@ -451,10 +455,10 @@ function SimulationHandler.new()
     }
 
     -- immutable properties
-    self._particle_texture_shader_path = prefix .. "/simulation_handler_particle_texture.glsl"
-    self._outline_shader_path = prefix .. "/simulation_handler_outline.glsl"
-    self._instanced_draw_shader_path = prefix .. "/simulation_handler_instanced_draw.glsl"
-    self._lighting_shader_path = prefix .. "/simulation_handler_lighting.glsl"
+    self._particle_texture_shader_path = shader_path_prefix .. "/simulation_handler_particle_texture.glsl"
+    self._outline_shader_path = shader_path_prefix .. "/simulation_handler_outline.glsl"
+    self._instanced_draw_shader_path = shader_path_prefix .. "/simulation_handler_instanced_draw.glsl"
+    self._lighting_shader_path = shader_path_prefix .. "/simulation_handler_lighting.glsl"
 
     self._thresholding_threshold = 0.3 -- in [0, 1]
     self._thresholding_smoothness = 0.01 -- in [0, threshold_shader_threshold)
