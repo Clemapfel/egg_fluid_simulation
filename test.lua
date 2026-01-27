@@ -17,7 +17,9 @@ local simulation_handler = SimulationHandler() -- simulation instance
 -- list of batch ids
 local batch_ids = {} -- Table
 
--- configs, we will be swapping between these at run time
+simulation_handler:set_yolk_config({min_radius =0.5, max_radius = 1})
+simulation_handler:set_white_config({min_radius=1.5, max_radius=2})
+
 local solid_white_config, solid_yolk_config = simulation_handler:get_white_config(), simulation_handler:get_yolk_config()
 local fluid_config = {}
 
@@ -103,7 +105,7 @@ love.keypressed = function(which)
         end
 
         table.insert(batch_ids, 1, simulation_handler:add(
-            x, y
+            x, y, 10, 3, nil, nil, 20, 15
         ))
     elseif which == _remove_batch_key then
         local last = batch_ids[1]
@@ -153,9 +155,10 @@ Press `%s` to swap configs
     ), 10, 10)
 
     local font = love.graphics.getFont()
+    local white_n, yolk_n = simulation_handler:get_n_particles()
     local text = string.format("FPS: %.1f | # Particles: %i | Frame Usage: %.5f%%",
         love.timer.getFPS(), -- current fps
-        simulation_handler:get_n_particles(),
+        white_n + yolk_n,
         ((_state.performance_sum / #_state.performance_history) / love.timer.getFPS()) * 100
     )
     local text_w = love.graphics.getFont():getWidth(text)
