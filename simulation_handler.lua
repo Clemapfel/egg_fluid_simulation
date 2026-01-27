@@ -4,7 +4,7 @@ local shader_path_prefix = "egg_fluid_simulation"
 -- with `common/simulation`
 
 require(string.gsub(shader_path_prefix .. "/math", "[/\\]", "."))
-local log = require(shader_path_prefix .. "/log", "[/\\]", ".")
+local log = require(string.gsub(shader_path_prefix .. "/log", "[/\\]", "."))
 
 --- @class SimulationHandler
 local SimulationHandler = {}
