@@ -72,11 +72,15 @@ function SimulationHandler:add(x, y, white_radius, yolk_radius, white_color, yol
         end
     end
 
-    local white_area = math.pi * white_radius^2 -- area of a circle = pi * r^2
-    local white_n_particles = math.max(5, math.ceil(self._particle_density * white_area))
+    local white_particle_radius = math.mix(self._white_config.min_radius, self._white_config.max_radius, 0.5) -- expected value
+    local white_n_particles = math.ceil(math.max(5,
+        (math.pi * white_radius^2) / (math.pi * white_particle_radius^2)
+    )) -- (area of white) / (area of particle), where circular area = 2 pi r^2
 
-    local yolk_area = math.pi * yolk_radius^2
-    local yolk_n_particles = math.max(5, math.ceil(self._particle_density * yolk_area))
+    local yolk_particle_radius = self._yolk_config.texture_scale * math.mix(self._yolk_config.min_radius, self._yolk_config.max_radius, 0.5)
+    local yolk_n_particles = math.ceil(math.max(3,
+        (math.pi * yolk_radius^2) / (math.pi * yolk_particle_radius^2)
+    ))
 
     self._total_n_white_particles = self._total_n_white_particles + white_n_particles
     self._total_n_yolk_particles = self._total_n_yolk_particles + yolk_n_particles
@@ -465,7 +469,6 @@ function SimulationHandler.new()
 
     self._mass_distribution_variance = 4 -- unitless, (2 * n) with n >= 1
     self._max_collision_fraction = 0.05 -- fraction
-    self._particle_density = 1 / 128 -- particles per px^2
     self._use_particle_color = false -- whether particle rgb should be accumulated for the final image
     self._use_lighting = true -- whether specular highlight and shadows should be drawn
 
