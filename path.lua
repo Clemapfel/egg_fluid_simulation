@@ -6,8 +6,6 @@ setmetatable(Path, {
     end
 })
 
-local log = require "egg_fluid_simulation.log"
-
 local _type_metatable = { __index = Path }
 
 --- @brief create a new path from points

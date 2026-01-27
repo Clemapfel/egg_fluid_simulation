@@ -14,7 +14,15 @@ local SimulationHandler = require "egg_fluid_simulation.simulation_handler"
 local handler = SimulationHandler()
 ```
 
-where the require path changes depending on the `prefix` value at the top of this file.
+where the require path changes depending on the `shader_path_prefix` value at the top of this file. This value needs to be set to notify the library of where the file is located, such that it can load auxiliary files such as shader. 
+
+For example, if the simulation handler is `/common/simulation/simulation_handler.lua` relative to the project root, then `shader_path_prefix` should be
+
+```lua
+local shader_path_prefix = "common/simulation"
+```
+
+Note that there should be no prefix `/`, no `/` at the end, and that is uses slashes, not `.`
 
 To create a batch, we use `add`
 

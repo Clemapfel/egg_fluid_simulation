@@ -8,7 +8,7 @@ require "common.input_manager"
 local _state = {} -- ignore this
 
 -- import types
-local SimulationHandler = require "egg_fluid_simulation.simulation_handler"
+local SimulationHandler = require "egg_fluid_simulation.test.simulation_handler"
 
 -- handler instance
 local simulation_handler = SimulationHandler() -- simulation instance
@@ -75,7 +75,7 @@ end
 
 --- ### internals, ignore everything below ###
 
-local Path = require "egg_fluid_simulation.path"
+local Path = require "egg_fluid_simulation.test.path"
 
 -- input handling
 local _new_batch_key = "j"
