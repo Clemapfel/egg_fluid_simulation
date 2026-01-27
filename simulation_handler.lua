@@ -49,13 +49,23 @@ function SimulationHandler:add(
     white_color = white_color or self._white_config.color
     yolk_color = yolk_color or self._yolk_config.color
 
+    white_n_particles = white_n_particles or math.ceil(
+        (math.pi * white_radius^2) / (math.pi * white_particle_radius^2)
+    ) -- (area of white) / (area of particle), where circular area = pi r^2
+
+    yolk_n_particles = yolk_n_particles or math.ceil(
+        (math.pi * yolk_radius^2) / (math.pi * yolk_particle_radius^2)
+    )
+
     log.assert(
         x, "number",
         y, "number",
         white_radius, "number",
         yolk_radius, "number",
         white_color, "table",
-        yolk_color, "table"
+        yolk_color, "table",
+        white_n_particles, "number",
+        yolk_n_particles, "number"
     )
     
     if white_radius <= 0 then
@@ -64,6 +74,14 @@ function SimulationHandler:add(
 
     if yolk_radius <= 0 then
         log.error( "In SimulationHandler.add: yolk radius cannot be 0 or negative")
+    end
+
+    if white_n_particles <= 1 then
+        log.error( "In SimulationHandler.add: white particle count cannot be 1 or negative")
+    end
+
+    if yolk_n_particles <= 1 then
+        log.error( "In SimulationHandler.add: yolk particle count cannot be 1 or negative")
     end
 
     do -- assert color
@@ -88,14 +106,6 @@ function SimulationHandler:add(
             end
         end
     end
-
-    white_n_particles = white_n_particles or math.ceil(
-        (math.pi * white_radius^2) / (math.pi * white_particle_radius^2)
-    ) -- (area of white) / (area of particle), where circular area = 2 pi r^2
-
-    yolk_n_particles = yolk_n_particles or math.ceil(
-        (math.pi * yolk_radius^2) / (math.pi * yolk_particle_radius^2)
-    )
 
     local warn = function(which, egg_radius, particle_radius, n_particles)
         log.warning("In SimulationHandler.add: trying to add ", which, " of radius `", egg_radius, "`, but the ", which, " particle radius is `~", particle_radius, "`, so only `", n_particles, "` particles will be created. Consider increasing the ", which, " radius or decreasing the ", which, " particle size")
