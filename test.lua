@@ -12,7 +12,16 @@ local prefix = "egg_fluid_simulation" -- file location
 local SimulationHandler = require(prefix .. ".simulation_handler")
 
 -- handler instance
-local simulation_handler = SimulationHandler() -- simulation instance
+local simulation_handler
+do
+    -- load default config
+    local chunk, error_maybe = love.filesystem.load(prefix .. "/simulation_handler_default_config.lua")
+    if error_maybe ~= nil then error(error_maybe) end
+    local white_config, yolk_config = chunk()
+
+    -- instantiate, require config as arguments
+    simulation_handler = SimulationHandler(white_config, yolk_config)
+end
 
 -- list of batch ids
 local batch_ids = {} -- Table

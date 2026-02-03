@@ -11,10 +11,43 @@ To initialize the simulation, we instance the object like so
 ```lua
 -- in global scope
 local SimulationHandler = require "egg_fluid_simulation.simulation_handler"
-local handler = SimulationHandler()
+local handler = SimulationHandler(white_config, yolk_config)
 ```
 
-where the require path changes depending on the `shader_path_prefix` value at the top of this file. This value needs to be set to notify the library of where the file is located, such that it can load auxiliary files such as shader. 
+where `white_config` and `yolk_config` are **both required to have all of the following parameters**:
+
+```lua
+local config = {}
+    damping = --[[Number in 0, 1]],
+    follow_strength = --[[Number in 0, 1]],
+
+    cohesion_strength = --[[Number in 0, 1]],
+    cohesion_interaction_distance_factor = --[[Number > 1]],
+
+    collision_strength = --[[Number in 0, 1]],
+    collision_overlap_factor = --[[Number > 1]],
+
+    color = --[[Table<Number, Number, Number, Number>, all in 0, 1]],
+    outline_color = --[[Table<Number, Number, Number, Number>, all in 0, 1]],
+    outline_thickness = --[[Number > 1]],
+
+    highlight_strength = --[[Number > 0]],
+    shadow_strength = --[[Number > 0]],
+
+    min_mass = --[[Number > 0]],
+    max_mass = --[[Number >= min_mass]],
+
+    min_radius = --[[Number > 0]],
+    max_radius = --[[Number >= max_mass]],
+
+    texture_scale = --[[Number > 1]],
+    motion_blur = --[[Number > 0]]
+}
+```
+
+For an explanation of all these config parameters, see the documentation below.
+
+When requiring the simulation handler, the path changes depending on the `shader_path_prefix` value at the top of this file. This value needs to be set to notify the library of where the file is located, such that it can load auxiliary files such as shader. 
 
 For example, if the simulation handler is `/common/simulation/simulation_handler.lua` relative to the project root, then `shader_path_prefix` should be
 
