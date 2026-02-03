@@ -897,15 +897,6 @@ function SimulationHandler:_new_batch(
         return math.mix(min, max, t)
     end
 
-    -- generate normally distributed value in interval
-    local random_normal = function(x_radius, y_radius)
-        local value
-        repeat
-            value = love.math.randomNormal(0.25, 0.5)
-        until value >= 0 and value <= 1
-        return value
-    end
-
     -- uniformly distribute points across the disk using fibonacci spiral
     local fibonacci_spiral = function(i, n, x_radius, y_radius)
         local golden_ratio = (1 + math.sqrt(5)) / 2
