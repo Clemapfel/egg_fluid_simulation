@@ -919,8 +919,8 @@ function SimulationHandler:_new_batch(
         end
 
         -- 2-point gauss-legendre integration, reduces aliasing at low particle counts
-        local left = (i - 1) / n
-        local right = i / n
+        local left = (i - 0.5) / n
+        local right = (i + 0.5) / n
 
         local center = 0.5 * (left + right)
         local half_width = 0.5 * (right - left)
