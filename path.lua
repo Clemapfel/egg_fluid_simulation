@@ -46,12 +46,9 @@ function Path:at(t)
     local local_t = (t - segment.fraction) / segment.fraction_length
 
     local distance_along_segment = local_t * segment.distance
-    return math.add(
-        segment.from_x,
-        segment.from_y,
-        segment.dx * distance_along_segment,
-        segment.dy * distance_along_segment
-    )
+    return
+        segment.from_x + segment.dx * distance_along_segment,
+        segment.from_y + segment.dy * distance_along_segment
 end
 
 --- @brief get the segment endpoints at parameter t
