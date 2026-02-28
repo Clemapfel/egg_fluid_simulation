@@ -53,7 +53,6 @@ love.update = function(delta)
 end
 
 love.draw = function()
-    love.graphics.clear(false, true, false)
     love.graphics.clear(0.5, 0.5, 0.5, 1)
     _state.draw_path()
 
