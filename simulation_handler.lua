@@ -2154,7 +2154,6 @@ do
             )
 
             love.graphics.draw(canvas, canvas_x, canvas_y)
-
             love.graphics.setShader(nil)
         end
 
