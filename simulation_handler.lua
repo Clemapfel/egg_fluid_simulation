@@ -2133,12 +2133,7 @@ do
                 self._outline_shader:send("outline_thickness", outline_thickness)
                 love.graphics.setColor(outline_color)
                 love.graphics.draw(canvas, canvas_x, canvas_y)
-
-                if self._use_particle_color then
-                    love.graphics.setColor(1, 1, 1, 1)
-                else
-                    love.graphics.setColor(color)
-                end
+                love.graphics.setColor(color)
             end
 
             love.graphics.setShader(self._lighting_shader)

@@ -58,8 +58,8 @@ simulation_handler:set_yolk_config({
 })
 
 simulation_handler:set_white_config({
-    min_radius= 1.5,
-    max_radius= 2,
+    min_radius = 1.5,
+    max_radius = 2,
     color = { 1, 1, 1, 1 }
 })
 
