@@ -19,8 +19,49 @@ end
 -- list of batch ids
 local batch_ids = {} -- Table
 
-simulation_handler:set_yolk_config({min_radius =0.5, max_radius = 1})
-simulation_handler:set_white_config({min_radius=1.5, max_radius=2})
+-- color overrides (experimental)
+simulation_handler._use_particle_color = true
+simulation_handler._use_lighting = true
+local white_color = simulation_handler:get_white_config().color
+local current_color_i = 1
+local colors = {
+    [1] = { -- green
+        [1] = 0.011764705882353,
+        [2] = 0.86274509803922,
+        [3] = 0.19607843137255,
+        [4] = 1
+    },
+    [2] = { -- red
+        [1] = 1,
+        [2] = 0.11372549019608,
+        [3] = 0.46666666666667,
+        [4] = 1
+    },
+    [3] = { -- mint
+        [1] = 0.070588235294118,
+        [2] = 1,
+        [3] = 0.70588235294118,
+        [4] = 1
+    },
+    [4] = { -- blue
+        [1] = 0,
+        [2] = 0.60392156862745,
+        [3] = 0.99607843137255,
+        [4] = 1
+    }
+}
+
+simulation_handler:set_yolk_config({
+    min_radius = 0.5,
+    max_radius = 1,
+    color = { 1, 1, 1, 1 }
+})
+
+simulation_handler:set_white_config({
+    min_radius= 1.5,
+    max_radius= 2,
+    color = { 1, 1, 1, 1 }
+})
 
 local solid_white_config, solid_yolk_config = simulation_handler:get_white_config(), simulation_handler:get_yolk_config()
 local fluid_config = {}
@@ -106,9 +147,18 @@ love.keypressed = function(which)
             x, y = mid_w - rx, mid_h + ry
         end
 
+        -- choose a random color
+        local yolk_color = colors[current_color_i % #colors + 1]
+        current_color_i = current_color_i + 1
+
+        -- set color on :add
         table.insert(batch_ids, 1, simulation_handler:add(
-            x, y, 10, 3, nil, nil, 20, 15
+            x, y,
+            10, 3,  -- white_radius, yolk_radius
+            white_color, yolk_color, -- white color, yolk_color,
+            20, 15 -- white n particles, yolk n particles
         ))
+
     elseif which == _remove_batch_key then
         local last = batch_ids[1]
         if last ~= nil then
