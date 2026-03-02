@@ -54,13 +54,13 @@ local colors = {
 simulation_handler:set_yolk_config({
     min_radius = 0.5,
     max_radius = 1,
-    color = { 1, 1, 1, 1 }
+    --color = { 1, 1, 1, 1 }
 })
 
 simulation_handler:set_white_config({
     min_radius = 1.5,
     max_radius = 2,
-    color = { 1, 1, 1, 1 }
+    --color = { 1, 1, 1, 1 }
 })
 
 local solid_white_config, solid_yolk_config = simulation_handler:get_white_config(), simulation_handler:get_yolk_config()

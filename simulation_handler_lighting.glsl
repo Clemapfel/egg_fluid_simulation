@@ -26,7 +26,7 @@ vec4 effect(vec4 color, sampler2D tex, vec2 texture_coordinates, vec2 screen_coo
         );
 
         if (use_particle_color)
-            center = vec4(data.rgb * value, value) * color;
+            center = vec4(data.rgb, value) * color;
         else
             center = vec4(value) * color;
     }
