@@ -1285,6 +1285,8 @@ do
                     value[i] = math.clamp(component, 0, 1)
                 end
             else
+                --- @diagnostic disable: iter-variable-reassign
+
                 -- assert type and bounds
                 if entry.type ~= nil and type(value) ~= entry.type then
                     error("wrong type for config key `", key, "`, expected `", entry.type, "`, got `", type(value), "`")
