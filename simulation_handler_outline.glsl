@@ -1,14 +1,14 @@
 #ifdef PIXEL
 
-uniform float outline_thickness = 2.0;
-uniform float threshold = 0.5;
+uniform float outline_thickness;
+uniform float threshold;
 
 vec4 effect(vec4 color, sampler2D tex, vec2 texture_coordinates, vec2 frag_position) {
     vec2 screen_size = love_ScreenSize.xy;
     vec2 pixel_size = 1.0 / screen_size;
 
     vec4 center = texture(tex, texture_coordinates);
-    if (center.a == 0) discard;
+    if (center.a == 0.0) discard;
 
     float max_alpha = 0.0;
     float radius = outline_thickness;
@@ -39,7 +39,7 @@ vec4 effect(vec4 color, sampler2D tex, vec2 texture_coordinates, vec2 frag_posit
         }
     }
 
-    max_alpha = min(max_alpha, 1);
+    max_alpha = min(max_alpha, 1.0);
 
     float outline_threshold = 0.5 * threshold; // manually tuned to match outline_width in px
     float outline_smoothness = 0.035;

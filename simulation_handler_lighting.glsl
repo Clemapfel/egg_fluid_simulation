@@ -1,15 +1,15 @@
 #ifdef PIXEL
 
-uniform bool use_highlight = true;
-uniform float highlight_strength = 1;
+uniform bool use_highlight;
+uniform float highlight_strength;
 
-uniform bool use_shadow = true;
-uniform float shadow_strength = 1;
+uniform bool use_shadow;
+uniform float shadow_strength;
 
-uniform bool use_particle_color = false;
+uniform bool use_particle_color;
 
-uniform float threshold = 0.5;
-uniform float smoothness = 0.05;
+uniform float threshold;
+uniform float smoothness;
 
 vec4 effect(vec4 color, sampler2D tex, vec2 texture_coordinates, vec2 screen_coords)
 {
@@ -51,7 +51,7 @@ vec4 effect(vec4 color, sampler2D tex, vec2 texture_coordinates, vec2 screen_coo
     // specular highlight
     vec3 specular_light_direction = normalize(vec3(1.0, -1.0, 1.0));
     float specular = 0.0;
-    const float specular_focus = 48; // how "tightly" the highlight is focused
+    const float specular_focus = 48.0; // how "tightly" the highlight is focused
 
     if (use_highlight)
     {
@@ -61,12 +61,12 @@ vec4 effect(vec4 color, sampler2D tex, vec2 texture_coordinates, vec2 screen_coo
     }
 
     // shadows
-    vec3 shadow_light_direction = normalize(vec3(-0.5, 0.75, 0));
-    float shadow = 0;
+    vec3 shadow_light_direction = normalize(vec3(-0.5, 0.75, 0.0));
+    float shadow = 0.0;
 
     if (use_shadow) {
         shadow = dot(surface_normal, shadow_light_direction);
-        shadow = smoothstep(0, 1, clamp(shadow * shadow_strength, 0, 1));
+        shadow = smoothstep(0.0, 1.0, clamp(shadow * shadow_strength, 0.0, 1.0));
     }
 
     return vec4(center.rgb - shadow + specular, center.a);

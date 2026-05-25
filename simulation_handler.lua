@@ -572,6 +572,12 @@ function SimulationHandler:_initialize_shaders()
             log.error("In SimulationHandler._initialize_shader: unable to create shader `", path, "`: file does not exist. Was `shader_path_prefix` at the top of `simulation_handler.lua` set correctly?")
         end
 
+        local valid, message = love.graphics.validateShader(true, path, defines)
+        if not valid then
+            log.error("In SimulationHandler._initialize_shader: shader at `", path, "` failed to compile for OpenGL ES: ", message)
+            return nil
+        end
+
         local success, shader_or_error = pcall(
             love.graphics.newShader,
             path
@@ -579,7 +585,7 @@ function SimulationHandler:_initialize_shaders()
 
         if not success then
             log.error( "In SimulationHandler._initialize_shader: unable to create shader at `", path, "`: ", shader_or_error)
-            return
+            return nil
         else
             return shader_or_error
         end
@@ -2140,12 +2146,12 @@ do
 
             love.graphics.setShader(self._lighting_shader)
 
-            self._lighting_shader:send("highlight_strength", config.highlight_strength)
+            self._lighting_shader:send("highlight_strength", config.highlight_strength or 1)
             self._lighting_shader:send("use_highlight",
                 config.highlight_strength > 0 and self._use_lighting
             )
 
-            self._lighting_shader:send("shadow_strength", config.shadow_strength)
+            self._lighting_shader:send("shadow_strength", config.shadow_strength or 1)
             self._lighting_shader:send("use_shadow",
                 config.shadow_strength > 0 and self._use_lighting
             )
