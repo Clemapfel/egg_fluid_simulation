@@ -1,5 +1,3 @@
-#pragma language glsl3
-
 #ifdef VERTEX
 
 layout (location = 3) in vec4 particle_position; // xy: current xy, zw: last frame xy
